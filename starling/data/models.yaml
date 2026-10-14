@@ -1,0 +1,125 @@
+models:
+  # WhisperBackend (faster-whisper / CTranslate2)
+  whisper-tiny:
+    backend: whisper
+    repo: Systran/faster-whisper-tiny
+    vram_mb: 1024
+    languages: auto
+    supports_translate: true
+    supports_timestamps: true
+
+  whisper-base:
+    backend: whisper
+    repo: Systran/faster-whisper-base
+    vram_mb: 1024
+    languages: auto
+    supports_translate: true
+    supports_timestamps: true
+
+  whisper-small:
+    backend: whisper
+    repo: Systran/faster-whisper-small
+    vram_mb: 2048
+    languages: auto
+    supports_translate: true
+    supports_timestamps: true
+
+  whisper-medium:
+    backend: whisper
+    repo: Systran/faster-whisper-medium
+    vram_mb: 5120
+    languages: auto
+    supports_translate: true
+    supports_timestamps: true
+
+  whisper-large-v3:
+    backend: whisper
+    repo: Systran/faster-whisper-large-v3
+    vram_mb: 10240
+    languages: auto
+    supports_translate: true
+    supports_timestamps: true
+
+  whisper-turbo:
+    backend: whisper
+    # Systran/faster-whisper-large-v3-turbo does not exist; pin deepdml CT2 export
+    repo: deepdml/faster-whisper-large-v3-turbo-ct2
+    vram_mb: 6144
+    languages: auto
+    supports_translate: false
+    supports_timestamps: true
+
+  whisper-distil-large-v3:
+    backend: whisper
+    repo: Systran/faster-distil-whisper-large-v3
+    vram_mb: 5120
+    languages: ["en"]
+    supports_translate: false
+    supports_timestamps: true
+
+  # NemoBackend (NeMo 3.0)
+  orukeet:
+    backend: nemo
+    repo: oruk/orukeet
+    file: orukeet-v0.1.0.nemo
+    revision: 555136b50265a132d4cea0d35560c26fc4f657ab
+    vram_mb: 4096
+    languages: ["bg", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "hr", "hu", "it", "lt", "lv", "mt", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "uk"]
+    supports_timestamps: true
+    license: CC-BY-SA-4.0
+
+  parakeet-tdt-0.6b-v3:
+    backend: nemo
+    repo: nvidia/parakeet-tdt-0.6b-v3
+    file: parakeet-tdt-0.6b-v3.nemo
+    vram_mb: 4096
+    languages: auto
+    supports_timestamps: true
+
+  parakeet-tdt-1.1b:
+    backend: nemo
+    repo: nvidia/parakeet-tdt-1.1b
+    file: parakeet-tdt-1.1b.nemo
+    vram_mb: 6144
+    languages: ["en"]
+    supports_timestamps: true
+
+  canary-1b-v2:
+    backend: nemo
+    repo: nvidia/canary-1b-v2
+    file: canary-1b-v2.nemo
+    vram_mb: 4096
+    languages: auto
+    supports_timestamps: true
+    supports_translate: true
+
+  # TransformersBackend
+  cohere-transcribe-2b:
+    backend: transformers
+    repo: CohereLabs/cohere-transcribe-03-2026
+    vram_mb: 6144
+    requires_language: true
+    gated: true
+    languages: ["en", "fr", "de", "es", "it", "pt", "nl", "pl", "el", "ar", "ja", "zh", "vi", "ko"]
+    supports_timestamps: false
+
+  qwen3-asr-1.7b:
+    backend: transformers
+    repo: Qwen/Qwen3-ASR-1.7B-hf
+    vram_mb: 5120
+    languages: auto
+    supports_timestamps: true
+
+  qwen3-asr-0.6b:
+    backend: transformers
+    repo: Qwen/Qwen3-ASR-0.6B-hf
+    vram_mb: 2560
+    languages: auto
+    supports_timestamps: true
+
+  moonshine-base:
+    backend: transformers
+    repo: UsefulSensors/moonshine-base
+    vram_mb: 1024
+    languages: ["en"]
+    supports_timestamps: false

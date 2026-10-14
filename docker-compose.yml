@@ -1,0 +1,23 @@
+services:
+  starling:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      HF_HUB_CACHE: /cache/huggingface
+      STT_MODEL_TTL: "300"
+      HF_TOKEN: ${HF_TOKEN:-}
+      API_KEY: ${API_KEY:-}
+    volumes:
+      - starling-hf:/cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  starling-hf:

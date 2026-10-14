@@ -1,0 +1,272 @@
+from __future__ import annotations
+
+import logging
+import time
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import PlainTextResponse, Response
+
+from starling.api.formats import format_transcript
+from starling.audio.normalize import load_audio_16k_mono
+from starling import metrics as M
+from starling.lifecycle.manager import ModelManager
+from starling.registry.catalog import ModelRegistry
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+def get_manager(request: Request) -> ModelManager:
+    return request.app.state.manager
+
+
+def get_registry(request: Request) -> ModelRegistry:
+    return request.app.state.registry
+
+
+@router.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok", "message": "OK"}
+
+
+@router.get("/metrics")
+async def prometheus_metrics(request: Request) -> Response:
+    if not getattr(request.app.state.settings, "metrics_enabled", True):
+        raise HTTPException(404, "Metrics disabled")
+    body, content_type = M.metrics_response()
+    return Response(content=body, media_type=content_type)
+
+
+@router.get("/v1/registry")
+async def list_registry(
+    registry: Annotated[ModelRegistry, Depends(get_registry)],
+    manager: Annotated[ModelManager, Depends(get_manager)],
+) -> dict[str, Any]:
+    items = []
+    loaded = set(manager.loaded_ids())
+    for entry in registry.all():
+        downloaded = registry.is_downloaded(entry)
+        items.append(
+            {
+                "id": entry.id,
+                "backend": entry.backend,
+                "repo": entry.repo,
+                "revision": entry.revision,
+                "gated": entry.gated,
+                "requires_language": entry.requires_language,
+                "supports_translate": entry.supports_translate,
+                "supports_timestamps": entry.supports_timestamps,
+                "languages": entry.languages,
+                "vram_mb": entry.vram_mb,
+                "license": entry.license,
+                "downloaded": downloaded,
+                "loaded": entry.id in loaded,
+            }
+        )
+    return {"object": "list", "data": items}
+
+
+@router.get("/v1/models")
+async def list_models(
+    registry: Annotated[ModelRegistry, Depends(get_registry)],
+) -> dict[str, Any]:
+    data = []
+    for entry in registry.all():
+        if registry.is_downloaded(entry):
+            data.append(
+                {
+                    "id": entry.id,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "starling",
+                    "permission": [],
+                    "root": entry.id,
+                    "parent": None,
+                }
+            )
+    return {"object": "list", "data": data}
+
+
+@router.post("/v1/models/{model_id:path}")
+async def download_model(
+    model_id: str,
+    registry: Annotated[ModelRegistry, Depends(get_registry)],
+    manager: Annotated[ModelManager, Depends(get_manager)],
+) -> dict[str, Any]:
+    try:
+        entry = registry.require(model_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown model '{model_id}'") from None
+
+    existed = registry.is_downloaded(entry)
+    if existed:
+        M.CACHE_HITS.inc()
+        return {"id": model_id, "status": "already_downloaded", "code": 201}
+    try:
+        manager.ensure_downloaded(entry)
+        M.CACHE_MISSES.inc()
+    except Exception as exc:
+        logger.exception("Download failed for %s", model_id)
+        detail = str(exc)
+        if "401" in detail or "gated" in detail.lower():
+            raise HTTPException(401, f"Model '{model_id}' is gated; set HF_TOKEN") from exc
+        raise HTTPException(500, f"Download failed: {exc}") from exc
+    return {"id": model_id, "status": "downloaded", "code": 200}
+
+
+@router.delete("/v1/models/{model_id:path}")
+async def delete_model(
+    model_id: str,
+    registry: Annotated[ModelRegistry, Depends(get_registry)],
+    manager: Annotated[ModelManager, Depends(get_manager)],
+    purge: bool = Query(False),
+) -> dict[str, Any]:
+    try:
+        entry = registry.require(model_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown model '{model_id}'") from None
+
+    unloaded = manager.unload(model_id)
+    purged = False
+    if purge:
+        registry.purge(entry)
+        purged = True
+    return {"id": model_id, "unloaded": unloaded, "purged": purged}
+
+
+@router.post("/v1/audio/transcriptions")
+async def transcriptions(
+    manager: Annotated[ModelManager, Depends(get_manager)],
+    registry: Annotated[ModelRegistry, Depends(get_registry)],
+    file: UploadFile = File(...),
+    model: str = Form(...),
+    language: str | None = Form(None),
+    prompt: str | None = Form(None),
+    response_format: str = Form("json"),
+    temperature: float = Form(0.0),
+    timestamp_granularities: list[str] | None = Form(None),
+    hotwords: str | None = Form(None),
+) -> Any:
+    return await _run_stt(
+        manager=manager,
+        registry=registry,
+        file=file,
+        model=model,
+        language=language,
+        prompt=prompt,
+        response_format=response_format,
+        temperature=temperature,
+        timestamp_granularities=timestamp_granularities,
+        hotwords=hotwords,
+        task="transcribe",
+    )
+
+
+@router.post("/v1/audio/translations")
+async def translations(
+    manager: Annotated[ModelManager, Depends(get_manager)],
+    registry: Annotated[ModelRegistry, Depends(get_registry)],
+    file: UploadFile = File(...),
+    model: str = Form(...),
+    prompt: str | None = Form(None),
+    response_format: str = Form("json"),
+    temperature: float = Form(0.0),
+) -> Any:
+    try:
+        entry = registry.require(model)
+    except KeyError:
+        raise HTTPException(404, f"Unknown model '{model}'") from None
+    if not entry.supports_translate:
+        raise HTTPException(
+            400,
+            f"Model '{model}' does not support translation (e.g. whisper-turbo is not trained for translate)",
+        )
+    return await _run_stt(
+        manager=manager,
+        registry=registry,
+        file=file,
+        model=model,
+        language=None,
+        prompt=prompt,
+        response_format=response_format,
+        temperature=temperature,
+        timestamp_granularities=None,
+        hotwords=None,
+        task="translate",
+    )
+
+
+async def _run_stt(
+    *,
+    manager: ModelManager,
+    registry: ModelRegistry,
+    file: UploadFile,
+    model: str,
+    language: str | None,
+    prompt: str | None,
+    response_format: str,
+    temperature: float,
+    timestamp_granularities: list[str] | None,
+    hotwords: str | None,
+    task: str,
+) -> Any:
+    try:
+        entry = registry.require(model)
+    except KeyError:
+        raise HTTPException(404, f"Unknown model '{model}'. See GET /v1/registry") from None
+
+    if entry.requires_language and not language:
+        raise HTTPException(
+            400,
+            f"Model '{model}' requires a language parameter (no auto-detect)",
+        )
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Empty audio file")
+
+    try:
+        audio = load_audio_16k_mono(raw)
+    except Exception as exc:
+        raise HTTPException(400, f"Failed to decode audio: {exc}") from exc
+
+    word_ts = bool(timestamp_granularities and "word" in timestamp_granularities)
+    if entry.supports_timestamps and response_format == "verbose_json":
+        word_ts = True
+
+    t0 = time.perf_counter()
+    try:
+        if not registry.is_downloaded(entry):
+            M.CACHE_MISSES.inc()
+        else:
+            M.CACHE_HITS.inc()
+
+        result = manager.transcribe(
+            model,
+            audio,
+            language=language,
+            task=task,
+            temperature=temperature,
+            word_timestamps=word_ts and entry.supports_timestamps,
+            hotwords=hotwords,
+            prompt=prompt,
+        )
+        M.INFERENCE_TOTAL.labels(model=model, backend=entry.backend, status="ok").inc()
+    except ValueError as exc:
+        M.INFERENCE_TOTAL.labels(model=model, backend=entry.backend, status="error").inc()
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        M.INFERENCE_TOTAL.labels(model=model, backend=entry.backend, status="error").inc()
+        logger.exception("Inference failed for %s", model)
+        raise HTTPException(500, f"Inference failed: {exc}") from exc
+    finally:
+        M.INFERENCE_LATENCY.labels(model=model, backend=entry.backend).observe(time.perf_counter() - t0)
+        M.MODELS_LOADED.set(len(manager.loaded_ids()))
+
+    result.task = task
+    payload = format_transcript(result, response_format)
+    if response_format in ("text", "srt", "vtt"):
+        return PlainTextResponse(content=payload if isinstance(payload, str) else str(payload))
+    return payload
