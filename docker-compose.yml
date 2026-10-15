@@ -1,5 +1,8 @@
 services:
   starling:
+    # Prefer a pre-built image from the local Forgejo registry; `build: .` remains
+    # as a local fallback (`docker compose build` / `up --build`).
+    image: git:3000/ghostweasel/starling:0.1.9
     build: .
     ports:
       - "8000:8000"

@@ -1,0 +1,84 @@
+name: Publish container image
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+      - "[0-9]*"
+
+concurrency:
+  group: publish-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORGEJO_IMAGE: git:3000/ghostweasel/starling
+  DOCKERHUB_IMAGE: topiary/starling
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -n1)"
+          fi
+          if [[ -z "${V}" ]]; then
+            echo "Could not resolve version" >&2
+            exit 1
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+          echo "Publishing version ${V}"
+
+      - name: Log in to Forgejo container registry
+        uses: docker/login-action@v3
+        with:
+          registry: git:3000
+          username: ${{ secrets.FORGEJO_REGISTRY_USER }}
+          password: ${{ secrets.FORGEJO_REGISTRY_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build image
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          docker build \
+            --label "org.opencontainers.image.version=${V}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            -t "${FORGEJO_IMAGE}:${V}" \
+            -t "${FORGEJO_IMAGE}:latest" \
+            -t "${DOCKERHUB_IMAGE}:${V}" \
+            -t "${DOCKERHUB_IMAGE}:latest" \
+            .
+
+      - name: Push to Forgejo
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          docker push "${FORGEJO_IMAGE}:${V}"
+          docker push "${FORGEJO_IMAGE}:latest"
+
+      - name: Push to Docker Hub
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          docker push "${DOCKERHUB_IMAGE}:${V}"
+          docker push "${DOCKERHUB_IMAGE}:latest"

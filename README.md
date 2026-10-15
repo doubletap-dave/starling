@@ -114,6 +114,75 @@ WAV/FLAC/OGG decode via soundfile. **M4A/AAC (iOS default), MP3, etc. need `ffmp
 
 ## Docker
 
+Compose defaults to a pre-built image from the local Forgejo registry, with a local build fallback:
+
+```yaml
+image: git:3000/ghostweasel/starling:0.1.9
+build: .
+```
+
+```bash
+# Pull from Forgejo (runners/hosts must resolve `git`)
+docker compose pull
+docker compose up -d
+
+# Or build locally and tag as that image name
+docker compose build
+docker compose up -d
+```
+
+Public consumers can pull from Docker Hub:
+
+```bash
+docker pull topiary/starling:0.1.9
+# or: docker pull topiary/starling:latest
+```
+
+### Published images
+
+Forgejo Actions (`.gitea/workflows/publish-image.yml`) builds on pushes to `main` and on version tags (`v*` / numeric). It pushes:
+
+| Registry | Tags |
+|----------|------|
+| `git:3000/ghostweasel/starling` | `:VERSION`, `:latest` |
+| `topiary/starling` (Docker Hub) | `:VERSION`, `:latest` |
+
+On a tag push, `VERSION` is the tag with a leading `v` stripped. On `main`, `VERSION` comes from `pyproject.toml`.
+
+**Required repository secrets** (Forgejo → Settings → Actions → Secrets):
+
+| Secret | Purpose |
+|--------|---------|
+| `FORGEJO_REGISTRY_USER` | Username that can write packages (e.g. `ghostweasel`) |
+| `FORGEJO_REGISTRY_TOKEN` | Forgejo access token with `write:package` (and usually `read:package`) |
+| `DOCKERHUB_USERNAME` | Docker Hub user/org that owns `topiary` |
+| `DOCKERHUB_TOKEN` | Docker Hub access token (not the account password) |
+
+The Actions runner must resolve `git:3000` (or change the workflow registry host to a DNS name the runner can reach) and have a working Docker daemon.
+
+### Manual build / push
+
+```bash
+V=0.1.9   # or: V=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+
+docker build \
+  -t git:3000/ghostweasel/starling:$V \
+  -t git:3000/ghostweasel/starling:latest \
+  -t topiary/starling:$V \
+  -t topiary/starling:latest \
+  .
+
+docker login git:3000
+docker push git:3000/ghostweasel/starling:$V
+docker push git:3000/ghostweasel/starling:latest
+
+docker login
+docker push topiary/starling:$V
+docker push topiary/starling:latest
+```
+
+Quick local run without compose:
+
 ```bash
 docker build -t starling:latest .
 docker run --gpus all -p 8000:8000 \
