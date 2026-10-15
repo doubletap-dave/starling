@@ -332,7 +332,7 @@ async def _run_stt(
         raise HTTPException(400, "Empty audio file")
 
     try:
-        audio = load_audio_16k_mono(raw)
+        audio = load_audio_16k_mono(raw, filename=file.filename)
     except Exception as exc:
         raise HTTPException(400, f"Failed to decode audio: {exc}") from exc
 

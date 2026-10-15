@@ -50,3 +50,4 @@ def test_ui_index(client):
     assert r.status_code == 200
     assert "Starling" in r.text
     assert "/static/app.js" in r.text
+    assert 'id="activity"' in r.text

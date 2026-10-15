@@ -8,9 +8,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HOST=0.0.0.0 \
     PORT=8000
 
+# ffmpeg is required for iOS M4A/AAC (and mp3/etc). librosa+soundfile alone cannot.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates ffmpeg libsndfile1 build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ffmpeg -version | head -n1
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 

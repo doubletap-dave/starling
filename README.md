@@ -101,6 +101,10 @@ Starling discovers CUDA devices and places loads on the GPU with the most free V
 | `ENABLE_UI` | `true` | Serve admin UI at `/` |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind |
 
+## Audio formats
+
+WAV/FLAC/OGG decode via soundfile. **M4A/AAC (iOS default), MP3, etc. need `ffmpeg` on PATH** — the Dockerfile installs it. Uploads are staged to a temp file with the original extension so ffmpeg can decode them (a bare `BytesIO` path never reaches ffmpeg).
+
 ## Docker
 
 ```bash

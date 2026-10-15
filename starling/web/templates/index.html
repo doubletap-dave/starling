@@ -6,24 +6,38 @@
   <title>{{ title }} — STT</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;650&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Fraunces:opsz,wght@9..144,500;9..144,650&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/app.css" />
-  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
+  <div class="atmosphere" aria-hidden="true">
+    <div class="murmur" id="murmur"></div>
+  </div>
+
   <div class="shell">
-    <h1 class="brand">Starling</h1>
-    <p class="tagline">Manage models, registry, and runtime settings. Every action goes through the HTTP API.</p>
+    <header class="hero">
+      <p class="eyebrow">Self-hosted STT</p>
+      <h1 class="brand">Starling</h1>
+      <p class="tagline">One endpoint for every voice model. Manage the flock from here — downloads, VRAM, registry, settings.</p>
+    </header>
 
     <div class="auth-bar">
       <label>
-        API key (Bearer)
-        <input id="api-key" type="password" autocomplete="off" placeholder="Leave empty if auth disabled" />
+        API key
+        <input id="api-key" type="password" autocomplete="off" placeholder="Bearer token if auth is enabled" />
       </label>
-      <button type="button" id="save-key" class="secondary">Save key</button>
+      <button type="button" id="save-key" class="secondary">Remember</button>
     </div>
     <div id="auth-msg" class="msg" hidden></div>
+
+    <aside id="activity" class="activity" hidden aria-live="polite">
+      <div class="activity-head">
+        <span class="activity-title">Working</span>
+        <span id="activity-count" class="activity-count"></span>
+      </div>
+      <ul id="activity-list" class="activity-list"></ul>
+    </aside>
 
     <nav class="tabs" aria-label="Sections">
       <button type="button" data-tab="models" class="active">Models</button>
@@ -34,44 +48,54 @@
     </nav>
 
     <section id="panel-models" class="panel active">
-      <h2>Models</h2>
-      <p class="hint">Download to disk, load into VRAM, unload, or purge cache. IDs come from the registry.</p>
-      <div class="toolbar">
+      <div class="panel-head">
+        <div>
+          <h2>Models</h2>
+          <p class="hint">Pull weights to disk, park them in VRAM, or free the GPU. Large downloads show progress here while they run.</p>
+        </div>
         <button type="button" id="refresh-models" class="secondary">Refresh</button>
       </div>
       <div id="models-msg" class="msg" hidden></div>
-      <table>
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Backend</th>
-            <th>Repo</th>
-            <th>VRAM</th>
-            <th>State</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="models-body"></tbody>
-      </table>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Backend</th>
+              <th>Repo</th>
+              <th>VRAM</th>
+              <th>State</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="models-body"></tbody>
+        </table>
+      </div>
     </section>
 
     <section id="panel-registry" class="panel">
-      <h2>Registry</h2>
-      <p class="hint">Add or edit catalog entries written to <code>models.yaml</code>.</p>
+      <div class="panel-head">
+        <div>
+          <h2>Registry</h2>
+          <p class="hint">Catalog entries live in <code>models.yaml</code>. Edit here; the API writes the file.</p>
+        </div>
+      </div>
       <div id="registry-msg" class="msg" hidden></div>
-      <table>
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Backend</th>
-            <th>Repo / file</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="registry-body"></tbody>
-      </table>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Backend</th>
+              <th>Repo / file</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="registry-body"></tbody>
+        </table>
+      </div>
 
-      <h2 style="margin-top:1.75rem">Add / edit entry</h2>
+      <h2 class="subhead">Add / edit entry</h2>
       <form id="registry-form" class="stack" data-mode="create">
         <div class="row">
           <label>ID <input name="id" required pattern="[A-Za-z0-9._-]+" /></label>
@@ -104,8 +128,12 @@
     </section>
 
     <section id="panel-settings" class="panel">
-      <h2>Settings</h2>
-      <p class="hint" id="settings-meta">Runtime overrides persist to <code>config/runtime.yaml</code>. API key and bind address stay env-only.</p>
+      <div class="panel-head">
+        <div>
+          <h2>Settings</h2>
+          <p class="hint" id="settings-meta">Runtime overrides persist to <code>config/runtime.yaml</code>. API key and bind address stay env-only.</p>
+        </div>
+      </div>
       <div id="settings-msg" class="msg" hidden></div>
       <form id="settings-form" class="stack">
         <label>STT model TTL (seconds) <input name="stt_model_ttl" type="number" /></label>
@@ -120,8 +148,11 @@
     </section>
 
     <section id="panel-status" class="panel">
-      <h2>Status</h2>
-      <div class="toolbar">
+      <div class="panel-head">
+        <div>
+          <h2>Status</h2>
+          <p class="hint">Live snapshot from <code>GET /v1/admin/status</code>.</p>
+        </div>
         <button type="button" id="refresh-status" class="secondary">Refresh</button>
       </div>
       <div id="status-msg" class="msg" hidden></div>
@@ -131,8 +162,12 @@
     </section>
 
     <section id="panel-try" class="panel">
-      <h2>Try transcription</h2>
-      <p class="hint">Posts to <code>POST /v1/audio/transcriptions</code>.</p>
+      <div class="panel-head">
+        <div>
+          <h2>Try transcription</h2>
+          <p class="hint">Posts to <code>POST /v1/audio/transcriptions</code>. M4A works when ffmpeg is available.</p>
+        </div>
+      </div>
       <div id="try-msg" class="msg" hidden></div>
       <form id="try-form" class="stack">
         <label>Model
@@ -149,7 +184,7 @@
           </select>
         </label>
         <label>Audio file <input name="file" type="file" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a" required /></label>
-        <button type="submit">Transcribe</button>
+        <button type="submit" id="try-submit">Transcribe</button>
       </form>
     </section>
   </div>
