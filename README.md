@@ -90,7 +90,7 @@ Starling discovers CUDA devices and places loads on the GPU with the most free V
 
 You can also set `DEVICE_OVERRIDE=GPU-<uuid>` when multiple GPUs are visible; Starling resolves the UUID to a torch index.
 
-**Unload actually frees VRAM:** unload runs `gc.collect()` + `torch.cuda.empty_cache()` (PyTorch otherwise keeps the allocator pool reserved).
+**Unload actually frees VRAM:** unload runs `gc.collect()` + `torch.cuda.empty_cache()` (PyTorch otherwise keeps the allocator pool reserved). faster-whisper/CTranslate2 models also call `model.unload_model()` — CT2 manages GPU memory outside PyTorch, so `empty_cache()` alone cannot free it.
 
 ## Config
 

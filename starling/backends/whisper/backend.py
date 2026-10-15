@@ -38,7 +38,15 @@ class WhisperBackend:
         )
 
     def unload(self, handle: Any) -> None:
-        # Manager drops its ref then calls release_cuda_memory()
+        # CTranslate2 owns GPU memory outside PyTorch — empty_cache() cannot free it.
+        # unload_model() detaches weights and clears CT2's CUDA allocator cache.
+        try:
+            inner = getattr(handle, "model", None)
+            if inner is not None and hasattr(inner, "unload_model"):
+                inner.unload_model()
+                logger.debug("CTranslate2 unload_model() completed")
+        except Exception as exc:
+            logger.warning("CTranslate2 unload_model failed: %s", exc)
         del handle
 
     def transcribe(

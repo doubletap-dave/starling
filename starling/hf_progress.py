@@ -57,12 +57,22 @@ def make_tqdm_class(job_id: str) -> type:
                 self.update(1)
 
         # Methods huggingface_hub / tqdm may call
-        def set_description(self, *args: Any, **kwargs: Any) -> None:
-            if args:
+        def set_description(self, desc: str | None = None, *args: Any, **kwargs: Any) -> None:
+            if desc is not None:
+                self.desc = str(desc)
+            elif args:
                 self.desc = str(args[0])
+            if self.desc:
                 progress_store.update(job_id, file_name=self.desc)
 
+        def set_description_str(self, desc: str | None = None, *args: Any, **kwargs: Any) -> None:
+            # huggingface_hub calls this (tqdm API) during multi-file downloads
+            self.set_description(desc, *args, **kwargs)
+
         def set_postfix(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def set_postfix_str(self, *args: Any, **kwargs: Any) -> None:
             return None
 
         def refresh(self, *args: Any, **kwargs: Any) -> None:

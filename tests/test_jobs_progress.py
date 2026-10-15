@@ -1,4 +1,5 @@
-from starling.progress import ProgressStore
+from starling.hf_progress import make_tqdm_class
+from starling.progress import ProgressStore, progress_store
 
 
 def test_progress_percent():
@@ -11,6 +12,18 @@ def test_progress_percent():
     store.finish("j1")
     assert store.get("j1").status == "done"
     assert store.get("j1").percent == 100.0
+
+
+def test_job_tqdm_set_description_str():
+    progress_store.start("jd", "whisper-tiny", "download")
+    Tqdm = make_tqdm_class("jd")
+    bar = Tqdm(total=100, desc="model.safetensors")
+    bar.set_description_str("config.json")
+    assert bar.desc == "config.json"
+    job = progress_store.get("jd")
+    assert job is not None
+    assert job.file_name == "config.json"
+    progress_store.finish("jd")
 
 
 def test_jobs_endpoint(client):
