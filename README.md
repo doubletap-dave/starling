@@ -84,7 +84,13 @@ See [`config/models.yaml`](config/models.yaml) (also editable via UI/API). Notab
 
 ## GPU
 
-Starling discovers CUDA devices and places loads on the GPU with the most free VRAM. Different models can sit on different GPUs concurrently. Transformers models that exceed a single card may use `device_map=auto`. Override with `DEVICE_OVERRIDE=cuda:0` (or `cpu`).
+Starling discovers CUDA devices and places loads on the GPU with the most free VRAM. Different models can sit on different GPUs concurrently. Transformers models that exceed a single card may use `device_map=auto`.
+
+**Pin by UUID, not index.** Container GPU ordinals often disagree with `nvidia-smi`. Compose defaults to the holocron RTX 4060 UUID via `NVIDIA_VISIBLE_DEVICES` / `device_ids`. Override with `STARLING_GPU_UUID`. Inside that container the visible card is `cuda:0` (`DEVICE_OVERRIDE=cuda:0`).
+
+You can also set `DEVICE_OVERRIDE=GPU-<uuid>` when multiple GPUs are visible; Starling resolves the UUID to a torch index.
+
+**Unload actually frees VRAM:** unload runs `gc.collect()` + `torch.cuda.empty_cache()` (PyTorch otherwise keeps the allocator pool reserved).
 
 ## Config
 
@@ -95,7 +101,8 @@ Starling discovers CUDA devices and places loads on the GPU with the most free V
 | `HF_TOKEN` | unset | Gated/private Hub repos |
 | `HF_HUB_CACHE` | Hub default | Cache directory |
 | `PRELOAD_MODELS` | `[]` | JSON list of model ids |
-| `DEVICE_OVERRIDE` | unset | `cpu` / `cuda:N` / `auto` |
+| `DEVICE_OVERRIDE` | unset | `cpu` / `cuda:N` / `auto` / `GPU-<uuid>` |
+| `STARLING_GPU_UUID` | holocron 4060 UUID | Compose/NVIDIA visible device pin |
 | `WHISPER_COMPUTE_TYPE` | `default` | CT2 compute type |
 | `RUNTIME_CONFIG_PATH` | `config/runtime.yaml` | Mutable settings overlay |
 | `ENABLE_UI` | `true` | Serve admin UI at `/` |

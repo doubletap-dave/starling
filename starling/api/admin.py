@@ -33,6 +33,7 @@ async def admin_status(
             "index": d.index,
             "name": d.name,
             "device": d.torch_device,
+            "uuid": d.uuid,
             "total_mb": d.total_mb,
             "free_mb": d.free_mb,
         }
@@ -45,6 +46,7 @@ async def admin_status(
         if lm is not None:
             item["backend"] = lm.entry.backend
             item["device"] = lm.placement.device
+            item["uuid"] = lm.placement.uuid
             item["vram_mb"] = lm.entry.vram_mb
         loaded.append(item)
 

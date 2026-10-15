@@ -192,31 +192,56 @@ async def unload_model(
     return {"id": model_id, "unloaded": unloaded, **_entry_view(registry, manager, model_id)}
 
 
+@router.get("/v1/jobs")
+async def list_jobs(active: bool = Query(True)) -> dict[str, Any]:
+    from starling.progress import progress_store
+
+    jobs = progress_store.list_active() if active else progress_store.list_recent()
+    return {"object": "list", "data": [j.to_dict() for j in jobs]}
+
+
+@router.get("/v1/jobs/{job_id}")
+async def get_job(job_id: str) -> dict[str, Any]:
+    from starling.progress import progress_store
+
+    job = progress_store.get(job_id)
+    if job is None:
+        raise HTTPException(404, f"Unknown job '{job_id}'")
+    return job.to_dict()
+
+
 @router.post("/v1/models/{model_id}")
 async def download_model(
     model_id: str,
     registry: Annotated[ModelRegistry, Depends(get_registry)],
     manager: Annotated[ModelManager, Depends(get_manager)],
+    wait: bool = Query(
+        True,
+        description="If false, start download in background and return 202 with job_id for polling",
+    ),
 ) -> dict[str, Any]:
     try:
-        entry = registry.require(model_id)
+        registry.require(model_id)
     except KeyError:
         raise HTTPException(404, f"Unknown model '{model_id}'") from None
 
-    existed = registry.is_downloaded(entry)
-    if existed:
-        M.CACHE_HITS.inc()
-        return {"id": model_id, "status": "already_downloaded", "code": 201}
     try:
-        manager.ensure_downloaded(entry)
-        M.CACHE_MISSES.inc()
+        if wait:
+            result = manager.download_wait(model_id)
+        else:
+            result = manager.start_download(model_id)
     except Exception as exc:
         logger.exception("Download failed for %s", model_id)
         detail = str(exc)
         if "401" in detail or "gated" in detail.lower():
             raise HTTPException(401, f"Model '{model_id}' is gated; set HF_TOKEN") from exc
         raise HTTPException(500, f"Download failed: {exc}") from exc
-    return {"id": model_id, "status": "downloaded", "code": 200}
+
+    if result.get("status") == "already_downloaded":
+        M.CACHE_HITS.inc()
+    elif result.get("status") in ("downloaded", "downloading"):
+        M.CACHE_MISSES.inc()
+    return result
 
 
 @router.delete("/v1/models/{model_id}")

@@ -182,21 +182,39 @@ class ModelRegistry:
         except Exception:
             return False
 
-    def download(self, entry: ModelEntry) -> str:
+    def download(self, entry: ModelEntry, *, job_id: str | None = None) -> str:
         """Download model weights; returns local path (file or snapshot dir)."""
+        tqdm_kwargs: dict[str, Any] = {}
+        if job_id:
+            from starling.hf_progress import make_tqdm_class
+
+            tqdm_kwargs["tqdm_class"] = make_tqdm_class(job_id)
+
         if entry.file:
-            return hf_hub_download(
-                repo_id=entry.repo,
-                filename=entry.file,
-                revision=entry.revision,
-                token=self.token,
-                cache_dir=self.cache_dir,
-            )
+            try:
+                return hf_hub_download(
+                    repo_id=entry.repo,
+                    filename=entry.file,
+                    revision=entry.revision,
+                    token=self.token,
+                    cache_dir=self.cache_dir,
+                    **tqdm_kwargs,
+                )
+            except TypeError:
+                # Older huggingface_hub: no tqdm_class on hf_hub_download
+                return hf_hub_download(
+                    repo_id=entry.repo,
+                    filename=entry.file,
+                    revision=entry.revision,
+                    token=self.token,
+                    cache_dir=self.cache_dir,
+                )
         return snapshot_download(
             repo_id=entry.repo,
             revision=entry.revision,
             token=self.token,
             cache_dir=self.cache_dir,
+            **tqdm_kwargs,
         )
 
     def local_path(self, entry: ModelEntry) -> str | None:

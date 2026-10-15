@@ -11,15 +11,11 @@
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <div class="atmosphere" aria-hidden="true">
-    <div class="murmur" id="murmur"></div>
-  </div>
-
   <div class="shell">
     <header class="hero">
       <p class="eyebrow">Self-hosted STT</p>
       <h1 class="brand">Starling</h1>
-      <p class="tagline">One endpoint for every voice model. Manage the flock from here — downloads, VRAM, registry, settings.</p>
+      <p class="tagline">One endpoint for every voice model. Manage downloads, VRAM, registry, and settings.</p>
     </header>
 
     <div class="auth-bar">
@@ -33,7 +29,7 @@
 
     <aside id="activity" class="activity" hidden aria-live="polite">
       <div class="activity-head">
-        <span class="activity-title">Working</span>
+        <span class="activity-title">In progress</span>
         <span id="activity-count" class="activity-count"></span>
       </div>
       <ul id="activity-list" class="activity-list"></ul>
@@ -137,7 +133,7 @@
       <div id="settings-msg" class="msg" hidden></div>
       <form id="settings-form" class="stack">
         <label>STT model TTL (seconds) <input name="stt_model_ttl" type="number" /></label>
-        <label>Device override <input name="device_override" placeholder="cpu | cuda:0 | empty=auto" /></label>
+        <label>Device override <input name="device_override" placeholder="cpu | cuda:0 | GPU-&lt;uuid&gt; | empty=auto" /></label>
         <label>Whisper compute type <input name="whisper_compute_type" placeholder="default | float16 | int8" /></label>
         <label>Preload models (comma-separated) <input name="preload_models" /></label>
         <label>HF hub cache path <input name="hf_hub_cache" /></label>

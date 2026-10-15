@@ -1,9 +1,20 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+_UUID_RE = re.compile(r"^(gpu-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def normalize_gpu_uuid(value: str) -> str:
+    """Normalize to lowercase form without a GPU- prefix for comparison."""
+    s = value.strip().lower()
+    if s.startswith("gpu-"):
+        s = s[4:]
+    return s
 
 
 @dataclass(frozen=True)
@@ -12,6 +23,7 @@ class DeviceInfo:
     name: str
     total_mb: int
     free_mb: int
+    uuid: str | None = None
 
     @property
     def torch_device(self) -> str:
@@ -25,6 +37,7 @@ class Placement:
     device: str  # "cpu", "cuda:0", or "auto" for device_map
     device_index: int | None
     use_device_map: bool = False
+    uuid: str | None = None
 
 
 class GpuPlacer:
@@ -47,12 +60,19 @@ class GpuPlacer:
                 free_b, total_b = torch.cuda.mem_get_info(i)
                 reserved = self._reserved_mb.get(f"cuda:{i}", 0)
                 free_mb = max(0, int(free_b / (1024 * 1024)) - reserved)
+                uuid = None
+                raw = getattr(props, "uuid", None)
+                if raw is not None:
+                    uuid = str(raw)
+                    if not uuid.lower().startswith("gpu-"):
+                        uuid = f"GPU-{uuid}"
                 devices.append(
                     DeviceInfo(
                         index=i,
                         name=props.name,
                         total_mb=int(total_b / (1024 * 1024)),
                         free_mb=free_mb,
+                        uuid=uuid,
                     )
                 )
         except Exception as exc:  # pragma: no cover
@@ -62,6 +82,34 @@ class GpuPlacer:
         if not devices:
             devices.append(DeviceInfo(index=None, name="cpu", total_mb=0, free_mb=0))
         return devices
+
+    def resolve_override(self, override: str) -> Placement | None:
+        """Resolve cpu / cuda:N / GPU-UUID override to a Placement."""
+        raw = override.strip()
+        low = raw.lower()
+        if low == "cpu":
+            return Placement(device="cpu", device_index=None)
+        if low == "auto":
+            return Placement(device="auto", device_index=None, use_device_map=True)
+        if low.startswith("cuda"):
+            idx = int(low.split(":")[1]) if ":" in low else 0
+            return Placement(device=f"cuda:{idx}", device_index=idx)
+        if _UUID_RE.match(low) or low.startswith("gpu-"):
+            needle = normalize_gpu_uuid(raw)
+            for d in self.discover():
+                if d.uuid and normalize_gpu_uuid(d.uuid) == needle:
+                    logger.info("Resolved GPU UUID %s -> %s (%s)", d.uuid, d.torch_device, d.name)
+                    return Placement(
+                        device=d.torch_device,
+                        device_index=d.index,
+                        uuid=d.uuid,
+                    )
+            raise ValueError(
+                f"GPU UUID '{raw}' not visible to this process. "
+                "Pin the container with NVIDIA_VISIBLE_DEVICES=<UUID> "
+                "(or compose device_ids) so the UUID is exposed."
+            )
+        return None
 
     def reserve(self, device: str, vram_mb: int) -> None:
         self._reserved_mb[device] = self._reserved_mb.get(device, 0) + vram_mb
@@ -81,14 +129,13 @@ class GpuPlacer:
         prefer_single_device: bool = True,
     ) -> Placement:
         if self.device_override:
-            override = self.device_override.strip().lower()
-            if override == "cpu":
-                return Placement(device="cpu", device_index=None)
-            if override.startswith("cuda"):
-                idx = int(override.split(":")[1]) if ":" in override else 0
-                return Placement(device=f"cuda:{idx}", device_index=idx)
-            if override == "auto" and allow_device_map:
-                return Placement(device="auto", device_index=None, use_device_map=True)
+            resolved = self.resolve_override(self.device_override)
+            if resolved is not None:
+                if resolved.device == "auto" and not allow_device_map:
+                    # Fall through to normal placement
+                    pass
+                else:
+                    return resolved
 
         devices = self.discover()
         gpus = [d for d in devices if d.index is not None]
@@ -96,7 +143,6 @@ class GpuPlacer:
         if not gpus:
             return Placement(device="cpu", device_index=None)
 
-        # Prefer a single GPU with enough free VRAM (largest free wins on ties)
         fitting = sorted(
             [d for d in gpus if d.free_mb >= vram_mb],
             key=lambda d: d.free_mb,
@@ -104,15 +150,13 @@ class GpuPlacer:
         )
         if fitting and prefer_single_device:
             best = fitting[0]
-            return Placement(device=best.torch_device, device_index=best.index)
+            return Placement(device=best.torch_device, device_index=best.index, uuid=best.uuid)
 
-        # No single GPU fits — shard via device_map when allowed
         if allow_device_map:
             total_free = sum(d.free_mb for d in gpus)
             if total_free >= vram_mb:
                 return Placement(device="auto", device_index=None, use_device_map=True)
 
-        # Best effort: largest free GPU (caller may still OOM)
         best = max(gpus, key=lambda d: d.free_mb)
         if best.free_mb < vram_mb:
             logger.warning(
@@ -122,4 +166,4 @@ class GpuPlacer:
                 best.free_mb,
                 best.torch_device,
             )
-        return Placement(device=best.torch_device, device_index=best.index)
+        return Placement(device=best.torch_device, device_index=best.index, uuid=best.uuid)

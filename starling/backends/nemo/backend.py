@@ -37,14 +37,8 @@ class NemoBackend:
         return model
 
     def unload(self, handle: Any) -> None:
+        # Manager drops its ref then calls release_cuda_memory()
         del handle
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
 
     def transcribe(
         self,

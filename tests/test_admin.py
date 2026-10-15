@@ -5,6 +5,7 @@ def test_admin_status(client):
     assert "version" in body
     assert "whisper" in body["backends"]
     assert "devices" in body
+    assert all("uuid" in d for d in body["devices"])
 
 
 def test_settings_mask_and_persist(client, tmp_path):

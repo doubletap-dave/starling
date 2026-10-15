@@ -7,7 +7,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Generator, Protocol
 
+from starling.gpu.memory import release_cuda_memory
 from starling.gpu.placer import GpuPlacer, Placement
+from starling.progress import progress_store
 from starling.registry.catalog import ModelEntry, ModelRegistry
 
 logger = logging.getLogger(__name__)
@@ -48,6 +50,7 @@ class ModelManager:
         self._loaded: dict[str, LoadedModel] = {}
         self._global = threading.RLock()
         self._timers: dict[str, threading.Timer] = {}
+        self._download_threads: dict[str, threading.Thread] = {}
 
     def is_loaded(self, model_id: str) -> bool:
         with self._global:
@@ -57,14 +60,59 @@ class ModelManager:
         with self._global:
             return list(self._loaded.keys())
 
-    def ensure_downloaded(self, entry: ModelEntry) -> str:
-        if not self.registry.is_downloaded(entry):
-            logger.info("Downloading model %s from %s", entry.id, entry.repo)
-            return self.registry.download(entry)
-        path = self.registry.local_path(entry)
-        if path is None:
-            return self.registry.download(entry)
-        return path
+    def ensure_downloaded(self, entry: ModelEntry, *, job_id: str | None = None) -> str:
+        if self.registry.is_downloaded(entry):
+            path = self.registry.local_path(entry)
+            if path is not None:
+                return path
+        logger.info("Downloading model %s from %s", entry.id, entry.repo)
+        return self.registry.download(entry, job_id=job_id)
+
+    def start_download(self, model_id: str) -> dict[str, Any]:
+        """Start or join a background download. Returns job status dict."""
+        entry = self.registry.require(model_id)
+        if self.registry.is_downloaded(entry):
+            return {"id": model_id, "status": "already_downloaded", "code": 201, "job_id": None}
+
+        existing = progress_store.active_for_model(model_id, "download")
+        if existing is not None:
+            return {"id": model_id, "status": "downloading", "code": 202, "job_id": existing.id}
+
+        job_id = f"download:{model_id}:{time.time_ns()}"
+        progress_store.start(job_id, model_id, "download", message=f"Downloading {model_id}")
+
+        def _run() -> None:
+            try:
+                self.registry.download(entry, job_id=job_id)
+                progress_store.finish(job_id)
+            except Exception as exc:
+                logger.exception("Download failed for %s", model_id)
+                progress_store.finish(job_id, error=str(exc))
+            finally:
+                with self._global:
+                    self._download_threads.pop(model_id, None)
+
+        thread = threading.Thread(target=_run, name=f"dl-{model_id}", daemon=True)
+        with self._global:
+            self._download_threads[model_id] = thread
+        thread.start()
+        return {"id": model_id, "status": "downloading", "code": 202, "job_id": job_id}
+
+    def download_wait(self, model_id: str) -> dict[str, Any]:
+        """Synchronous download with progress reporting (for curl / wait=true)."""
+        entry = self.registry.require(model_id)
+        if self.registry.is_downloaded(entry):
+            return {"id": model_id, "status": "already_downloaded", "code": 201, "job_id": None}
+
+        job_id = f"download:{model_id}:{time.time_ns()}"
+        progress_store.start(job_id, model_id, "download", message=f"Downloading {model_id}")
+        try:
+            self.registry.download(entry, job_id=job_id)
+            progress_store.finish(job_id)
+            return {"id": model_id, "status": "downloaded", "code": 200, "job_id": job_id}
+        except Exception as exc:
+            progress_store.finish(job_id, error=str(exc))
+            raise
 
     def _backend_for(self, entry: ModelEntry) -> Backend:
         backend = self.backends.get(entry.backend)
@@ -106,19 +154,29 @@ class ModelManager:
                 self._cancel_timer(model_id)
                 return loaded
 
-        local_path = self.ensure_downloaded(entry)
-        backend = self._backend_for(entry)
-        allow_map = entry.backend == "transformers"
-        placement = self.placer.place(entry.vram_mb, allow_device_map=allow_map)
-        logger.info("Loading %s on %s via %s", model_id, placement.device, entry.backend)
-        handle = backend.load(entry, local_path, placement)
-        self.placer.reserve(placement.device if placement.device != "auto" else "cuda:0", entry.vram_mb)
+        job_id = f"load:{model_id}:{time.time_ns()}"
+        progress_store.start(job_id, model_id, "load", message=f"Preparing {model_id}")
+        try:
+            if not self.registry.is_downloaded(entry):
+                progress_store.update(job_id, message=f"Downloading {model_id}")
+            local_path = self.ensure_downloaded(entry, job_id=job_id)
+            progress_store.update(job_id, message=f"Loading {model_id} into VRAM")
+            backend = self._backend_for(entry)
+            allow_map = entry.backend == "transformers"
+            placement = self.placer.place(entry.vram_mb, allow_device_map=allow_map)
+            logger.info("Loading %s on %s via %s", model_id, placement.device, entry.backend)
+            handle = backend.load(entry, local_path, placement)
+            self.placer.reserve(placement.device if placement.device != "auto" else "cuda:0", entry.vram_mb)
 
-        loaded = LoadedModel(entry=entry, handle=handle, placement=placement)
-        with self._global:
-            self._loaded[model_id] = loaded
-            self._cancel_timer(model_id)
-        return loaded
+            loaded = LoadedModel(entry=entry, handle=handle, placement=placement)
+            with self._global:
+                self._loaded[model_id] = loaded
+                self._cancel_timer(model_id)
+            progress_store.finish(job_id)
+            return loaded
+        except Exception as exc:
+            progress_store.finish(job_id, error=str(exc))
+            raise
 
     def unload(self, model_id: str) -> bool:
         with self._global:
@@ -128,10 +186,15 @@ class ModelManager:
             return False
         with loaded.lock:
             backend = self._backend_for(loaded.entry)
-            backend.unload(loaded.handle)
+            handle = loaded.handle
+            # Drop manager ref first so backend.unload + empty_cache see no live holders
+            loaded.handle = None
+            backend.unload(handle)
+            del handle
             device = loaded.placement.device if loaded.placement.device != "auto" else "cuda:0"
             self.placer.release(device, loaded.entry.vram_mb)
-        logger.info("Unloaded model %s", model_id)
+        release_cuda_memory()
+        logger.info("Unloaded model %s (CUDA cache cleared)", model_id)
         return True
 
     @contextmanager

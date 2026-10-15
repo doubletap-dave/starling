@@ -98,14 +98,17 @@ class TransformersBackend:
         return model
 
     def unload(self, handle: Any) -> None:
+        # Clear nested refs so tensors die before manager.empty_cache()
+        if isinstance(handle, dict):
+            model = handle.pop("model", None)
+            handle.clear()
+            if model is not None:
+                try:
+                    model.to("cpu")
+                except Exception:
+                    pass
+                del model
         del handle
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
 
     def transcribe(
         self,

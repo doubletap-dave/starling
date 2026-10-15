@@ -2,10 +2,9 @@
   const $ = (sel, el = document) => el.querySelector(sel);
   const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 
-  /** @type {Map<string, {id: string, label: string, started: number, timer?: number}>} */
-  const jobs = new Map();
-  /** modelId -> Set of ops */
-  const rowOps = new Map();
+  /** @type {Map<string, object>} job_id -> last job payload */
+  const tracked = new Map();
+  let pollTimer = null;
 
   function apiKey() {
     return sessionStorage.getItem("starling_api_key") || "";
@@ -47,12 +46,22 @@
     el.hidden = false;
   }
 
-  function fmtElapsed(ms) {
-    const s = Math.floor(ms / 1000);
-    if (s < 60) return `${s}s`;
-    const m = Math.floor(s / 60);
-    const r = s % 60;
-    return `${m}m ${r.toString().padStart(2, "0")}s`;
+  function fmtBytes(n) {
+    if (!n || n <= 0) return "0 B";
+    const units = ["B", "KB", "MB", "GB"];
+    let i = 0;
+    let v = n;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i += 1;
+    }
+    return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+  }
+
+  function fmtElapsed(s) {
+    const sec = Math.floor(s);
+    if (sec < 60) return `${sec}s`;
+    return `${Math.floor(sec / 60)}m ${String(sec % 60).padStart(2, "0")}s`;
   }
 
   function renderActivity() {
@@ -61,129 +70,102 @@
     const count = $("#activity-count");
     if (!strip || !list) return;
 
-    if (jobs.size === 0) {
+    const jobs = [...tracked.values()].filter((j) => j.status === "running");
+    if (jobs.length === 0) {
       strip.hidden = true;
-      document.body.classList.remove("busy");
       list.innerHTML = "";
       return;
     }
 
     strip.hidden = false;
-    document.body.classList.add("busy");
-    count.textContent = `${jobs.size} active`;
+    count.textContent = `${jobs.length} active`;
     list.innerHTML = "";
-    for (const job of jobs.values()) {
+    for (const job of jobs) {
       const li = document.createElement("li");
       li.className = "activity-item";
-      li.dataset.jobId = job.id;
+      const pct = job.percent;
+      const hasPct = pct != null && Number.isFinite(pct);
+      const meta = hasPct
+        ? `${pct.toFixed(0)}% · ${fmtBytes(job.bytes_done)} / ${fmtBytes(job.bytes_total)} · ${fmtElapsed(job.elapsed_s || 0)}`
+        : `${job.message || job.op} · ${fmtElapsed(job.elapsed_s || 0)}`;
       li.innerHTML = `
         <div class="activity-row">
-          <span class="activity-label">${esc(job.label)}</span>
-          <span class="activity-meta" data-elapsed>${fmtElapsed(Date.now() - job.started)}</span>
+          <span class="activity-label">${esc(job.model_id)} — ${esc(job.op)}</span>
+          <span class="activity-meta">${esc(meta)}</span>
         </div>
-        <div class="progress" aria-hidden="true"><i></i></div>`;
+        ${
+          hasPct
+            ? `<div class="progress" role="progressbar" aria-valuenow="${pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct}%"></i></div>`
+            : ""
+        }`;
       list.appendChild(li);
     }
   }
 
-  function tickActivity() {
-    $$("[data-elapsed]").forEach((el) => {
-      const item = el.closest(".activity-item");
-      const job = item && jobs.get(item.dataset.jobId);
-      if (job) el.textContent = fmtElapsed(Date.now() - job.started);
-    });
-  }
-
-  setInterval(tickActivity, 500);
-
-  function beginJob(key, label) {
-    const id = key;
-    jobs.set(id, { id, label, started: Date.now() });
-    renderActivity();
-    return id;
-  }
-
-  function endJob(id) {
-    jobs.delete(id);
-    renderActivity();
-  }
-
-  function markRowBusy(modelId, op, busy) {
-    const set = rowOps.get(modelId) || new Set();
-    if (busy) set.add(op);
-    else set.delete(op);
-    if (set.size) rowOps.set(modelId, set);
-    else rowOps.delete(modelId);
-  }
-
-  function rowIsBusy(modelId) {
-    return (rowOps.get(modelId) || new Set()).size > 0;
-  }
-
-  async function runJob({ key, label, modelId, op, fn, msgEl, after, successText }) {
-    if (modelId && op) markRowBusy(modelId, op, true);
-    beginJob(key, label);
-    // Re-render models so the row shows working state
-    if (modelId && $("#panel-models")?.classList.contains("active")) {
-      /* refreshModels will pick up rowOps */
-    }
-    const busyButtons = modelId
-      ? $$(`[data-model-id="${CSS.escape(modelId)}"] button`)
-      : [];
-    busyButtons.forEach((b) => {
-      b.disabled = true;
-      if (b.dataset.op === op) {
-        b.classList.add("busy");
-        b.dataset.label = b.textContent;
-        b.textContent = op === "download" ? "Downloading…" : op === "load" ? "Loading…" : "Working…";
-      }
-    });
-    // Also paint the row if present
-    const tr = modelId ? $(`tr[data-model-id="${CSS.escape(modelId)}"]`) : null;
-    if (tr) {
-      tr.classList.add("row-busy");
-      const state = tr.querySelector("[data-state]");
-      if (state) {
-        state.dataset.prev = state.innerHTML;
-        state.innerHTML = `<span class="badge working">${esc(op)}</span>`;
-      }
-    }
-    if (msgEl) showMsg(msgEl, `${label}…`, "info");
-
-    let out;
-    let ok = false;
+  async function pollJobs() {
     try {
-      out = await fn();
-      ok = true;
-    } catch (e) {
-      if (msgEl) showMsg(msgEl, e.message, "error");
-      throw e;
-    } finally {
-      endJob(key);
-      if (modelId && op) markRowBusy(modelId, op, false);
-      if (tr) {
-        tr.classList.remove("row-busy");
-        const state = tr.querySelector("[data-state]");
-        if (state && state.dataset.prev != null) state.innerHTML = state.dataset.prev;
+      const data = await api("/v1/jobs?active=true");
+      const activeIds = new Set();
+      for (const job of data.data || []) {
+        activeIds.add(job.id);
+        tracked.set(job.id, job);
       }
-      busyButtons.forEach((b) => {
-        b.disabled = false;
-        b.classList.remove("busy");
-        if (b.dataset.label) b.textContent = b.dataset.label;
-      });
+      // Drop finished from tracked unless we just need one last paint
+      for (const id of [...tracked.keys()]) {
+        if (!activeIds.has(id) && tracked.get(id)?.status === "running") {
+          // fetch final state
+          try {
+            const finalJob = await api(`/v1/jobs/${encodeURIComponent(id)}`);
+            tracked.set(id, finalJob);
+            if (finalJob.status !== "running") {
+              setTimeout(() => {
+                tracked.delete(id);
+                renderActivity();
+                if ($("#panel-models")?.classList.contains("active")) refreshModels();
+              }, 800);
+            }
+          } catch (_) {
+            tracked.delete(id);
+          }
+        }
+      }
+      renderActivity();
+      if (activeIds.size === 0 && tracked.size === 0) {
+        stopPolling();
+      }
+    } catch (_) {
+      /* ignore poll errors (e.g. auth) */
     }
+  }
 
-    if (ok) {
-      if (msgEl && successText !== false) {
-        showMsg(
-          msgEl,
-          successText || (typeof out === "object" ? JSON.stringify(out) : String(out)),
-          "ok",
-        );
-      }
-      if (after) await after(out);
-      return out;
+  function startPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(pollJobs, 500);
+    pollJobs();
+  }
+
+  function stopPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
     }
+  }
+
+  function trackJob(jobId) {
+    if (!jobId) return;
+    tracked.set(jobId, {
+      id: jobId,
+      model_id: "",
+      op: "download",
+      status: "running",
+      percent: null,
+      bytes_done: 0,
+      bytes_total: 0,
+      message: "Starting…",
+      elapsed_s: 0,
+    });
+    renderActivity();
+    startPolling();
   }
 
   function switchTab(name) {
@@ -196,6 +178,10 @@
     if (name === "try") fillTryModels();
   }
 
+  function modelBusy(modelId) {
+    return [...tracked.values()].some((j) => j.model_id === modelId && j.status === "running");
+  }
+
   async function refreshModels() {
     const tbody = $("#models-body");
     const msg = $("#models-msg");
@@ -203,12 +189,10 @@
       const data = await api("/v1/registry");
       tbody.innerHTML = "";
       for (const m of data.data || []) {
-        const busy = rowIsBusy(m.id);
+        const busyJob = [...tracked.values()].find(
+          (j) => j.model_id === m.id && j.status === "running",
+        );
         const tr = document.createElement("tr");
-        tr.dataset.modelId = m.id;
-        if (busy) tr.classList.add("row-busy");
-        const ops = rowOps.get(m.id);
-        const workingOp = ops && [...ops][0];
         tr.innerHTML = `
           <td><code>${esc(m.id)}</code></td>
           <td>${esc(m.backend)}</td>
@@ -216,59 +200,110 @@
           <td>${m.vram_mb ?? "—"}</td>
           <td data-state>
             ${
-              workingOp
-                ? `<span class="badge working">${esc(workingOp)}</span>`
+              busyJob
+                ? `<span class="badge working">${esc(busyJob.op)}${
+                    busyJob.percent != null ? ` ${busyJob.percent.toFixed(0)}%` : ""
+                  }</span>`
                 : `<span class="badge ${m.downloaded ? "on" : "off"}">${m.downloaded ? "disk" : "remote"}</span>
                    <span class="badge ${m.loaded ? "on" : "off"}">${m.loaded ? "vram" : "cold"}</span>`
             }
           </td>
-          <td class="actions" data-model-id="${esc(m.id)}"></td>`;
+          <td class="actions"></td>`;
         const actions = tr.querySelector(".actions");
-        const mk = (label, op, methodPath, method, cls = "") => {
-          const b = btn(label, () => {
-            if (rowIsBusy(m.id)) return;
-            runJob({
-              key: `${op}:${m.id}`,
-              label: `${label} ${m.id}`,
-              modelId: m.id,
-              op,
-              fn: () => api(methodPath, { method }),
-              msgEl: msg,
-              after: () => refreshModels(),
-              successText:
-                op === "download"
-                  ? `Downloaded ${m.id}`
-                  : op === "load"
-                    ? `Loaded ${m.id} into VRAM`
-                    : op === "unload"
-                      ? `Unloaded ${m.id}`
-                      : `Purged ${m.id}`,
-            }).catch(() => {});
-          }, cls);
-          b.dataset.op = op;
-          if (busy) {
-            b.disabled = true;
-            if (workingOp === op) {
-              b.classList.add("busy");
-              b.textContent =
-                op === "download" ? "Downloading…" : op === "load" ? "Loading…" : "Working…";
-            }
-          }
-          return b;
-        };
+        const disabled = !!busyJob;
+
         actions.append(
-          mk("Download", "download", `/v1/models/${encodeURIComponent(m.id)}`, "POST"),
-          mk("Load", "load", `/v1/models/${encodeURIComponent(m.id)}/load`, "POST"),
-          mk("Unload", "unload", `/v1/models/${encodeURIComponent(m.id)}/unload`, "POST", "secondary"),
-          mk("Purge", "purge", `/v1/models/${encodeURIComponent(m.id)}?purge=true`, "DELETE", "danger"),
+          btn("Download", () => downloadModel(m.id, msg), "", disabled),
+          btn("Load", () => loadModel(m.id, msg), "", disabled),
+          btn("Unload", () => simpleOp(m.id, "unload", msg), "secondary", disabled),
+          btn("Purge", () => simpleOp(m.id, "purge", msg), "danger", disabled),
         );
         tbody.appendChild(tr);
       }
-      if (msg && !msg.classList.contains("info") && !msg.classList.contains("error")) {
-        msg.hidden = true;
-      }
     } catch (e) {
       showMsg(msg, e.message, "error");
+    }
+  }
+
+  async function downloadModel(modelId, msgEl) {
+    try {
+      showMsg(msgEl, `Starting download of ${modelId}…`, "info");
+      const result = await api(`/v1/models/${encodeURIComponent(modelId)}?wait=false`, {
+        method: "POST",
+      });
+      if (result.status === "already_downloaded") {
+        showMsg(msgEl, `${modelId} is already on disk`, "ok");
+        refreshModels();
+        return;
+      }
+      if (result.job_id) trackJob(result.job_id);
+      showMsg(msgEl, `Downloading ${modelId}…`, "info");
+      refreshModels();
+      // Wait until job completes via polling, then toast
+      await waitForJob(result.job_id, msgEl, modelId);
+    } catch (e) {
+      showMsg(msgEl, e.message, "error");
+    }
+  }
+
+  async function waitForJob(jobId, msgEl, modelId) {
+    if (!jobId) return;
+    for (;;) {
+      await sleep(500);
+      let job;
+      try {
+        job = await api(`/v1/jobs/${encodeURIComponent(jobId)}`);
+      } catch (_) {
+        break;
+      }
+      tracked.set(jobId, job);
+      renderActivity();
+      if (job.status === "done") {
+        tracked.delete(jobId);
+        renderActivity();
+        showMsg(msgEl, `Downloaded ${modelId}`, "ok");
+        refreshModels();
+        return;
+      }
+      if (job.status === "error") {
+        tracked.delete(jobId);
+        renderActivity();
+        showMsg(msgEl, job.error || `Download failed for ${modelId}`, "error");
+        refreshModels();
+        return;
+      }
+    }
+  }
+
+  async function loadModel(modelId, msgEl) {
+    showMsg(msgEl, `Loading ${modelId}…`, "info");
+    startPolling();
+    refreshModels();
+    try {
+      await api(`/v1/models/${encodeURIComponent(modelId)}/load`, { method: "POST" });
+      showMsg(msgEl, `Loaded ${modelId}`, "ok");
+    } catch (e) {
+      showMsg(msgEl, e.message, "error");
+    } finally {
+      await pollJobs();
+      refreshModels();
+    }
+  }
+
+  async function simpleOp(modelId, op, msgEl) {
+    try {
+      if (op === "unload") {
+        showMsg(msgEl, `Unloading ${modelId}…`, "info");
+        await api(`/v1/models/${encodeURIComponent(modelId)}/unload`, { method: "POST" });
+        showMsg(msgEl, `Unloaded ${modelId}`, "ok");
+      } else {
+        showMsg(msgEl, `Purging ${modelId}…`, "info");
+        await api(`/v1/models/${encodeURIComponent(modelId)}?purge=true`, { method: "DELETE" });
+        showMsg(msgEl, `Purged ${modelId}`, "ok");
+      }
+      refreshModels();
+    } catch (e) {
+      showMsg(msgEl, e.message, "error");
     }
   }
 
@@ -290,19 +325,16 @@
           btn("Edit", () => fillRegistryForm(m), "secondary"),
           btn(
             "Delete",
-            () => {
+            async () => {
               if (!confirm(`Remove ${m.id} from registry?`)) return;
-              runJob({
-                key: `registry-del:${m.id}`,
-                label: `Delete registry ${m.id}`,
-                fn: () => api(`/v1/registry/${encodeURIComponent(m.id)}`, { method: "DELETE" }),
-                msgEl: msg,
-                after: () => {
-                  refreshRegistry();
-                  refreshModels();
-                },
-                successText: `Removed ${m.id}`,
-              }).catch(() => {});
+              try {
+                await api(`/v1/registry/${encodeURIComponent(m.id)}`, { method: "DELETE" });
+                showMsg(msg, `Removed ${m.id}`, "ok");
+                refreshRegistry();
+                refreshModels();
+              } catch (e) {
+                showMsg(msg, e.message, "error");
+              }
             },
             "danger",
           ),
@@ -359,22 +391,20 @@
       languages: "auto",
     };
     const id = f.id.value.trim();
-    const editing = f.dataset.mode === "edit";
-    runJob({
-      key: `registry-save:${id}`,
-      label: editing ? `Update ${id}` : `Create ${id}`,
-      fn: () =>
-        editing
-          ? api(`/v1/registry/${encodeURIComponent(id)}`, { method: "PUT", json: body })
-          : api("/v1/registry", { method: "POST", json: { id, ...body } }),
-      msgEl: msg,
-      after: () => {
-        resetRegistryForm();
-        refreshRegistry();
-        refreshModels();
-      },
-      successText: editing ? `Updated ${id}` : `Created ${id}`,
-    }).catch(() => {});
+    try {
+      if (f.dataset.mode === "edit") {
+        await api(`/v1/registry/${encodeURIComponent(id)}`, { method: "PUT", json: body });
+        showMsg(msg, `Updated ${id}`, "ok");
+      } else {
+        await api("/v1/registry", { method: "POST", json: { id, ...body } });
+        showMsg(msg, `Created ${id}`, "ok");
+      }
+      resetRegistryForm();
+      refreshRegistry();
+      refreshModels();
+    } catch (e) {
+      showMsg(msg, e.message, "error");
+    }
   }
 
   async function loadSettings() {
@@ -412,28 +442,13 @@
       hf_hub_cache: f.hf_hub_cache.value.trim(),
     };
     if (f.hf_token.value !== "") body.hf_token = f.hf_token.value;
-    const submit = f.querySelector('button[type="submit"]');
-    runJob({
-      key: "settings-save",
-      label: "Save settings",
-      fn: async () => {
-        if (submit) {
-          submit.disabled = true;
-          submit.classList.add("busy");
-        }
-        try {
-          return await api("/v1/admin/settings", { method: "PATCH", json: body });
-        } finally {
-          if (submit) {
-            submit.disabled = false;
-            submit.classList.remove("busy");
-          }
-        }
-      },
-      msgEl: msg,
-      after: () => loadSettings(),
-      successText: "Settings saved",
-    }).catch(() => {});
+    try {
+      await api("/v1/admin/settings", { method: "PATCH", json: body });
+      showMsg(msg, "Settings saved", "ok");
+      loadSettings();
+    } catch (e) {
+      showMsg(msg, e.message, "error");
+    }
   }
 
   async function loadStatus() {
@@ -462,7 +477,7 @@
       }
       if (cur) sel.value = cur;
     } catch (_) {
-      /* ignore until auth */
+      /* ignore */
     }
   }
 
@@ -478,52 +493,42 @@
     fd.append("model", f.model.value);
     fd.append("response_format", f.response_format.value);
     if (f.language.value.trim()) fd.append("language", f.language.value.trim());
-
-    runJob({
-      key: `transcribe:${f.model.value}`,
-      label: `Transcribe with ${f.model.value}`,
-      fn: async () => {
-        if (submit) {
-          submit.disabled = true;
-          submit.classList.add("busy");
-          submit.textContent = "Transcribing…";
-        }
-        try {
-          const res = await fetch("/v1/audio/transcriptions", {
-            method: "POST",
-            headers: authHeaders(),
-            body: fd,
-          });
-          const ct = res.headers.get("content-type") || "";
-          const data = ct.includes("application/json") ? await res.json() : await res.text();
-          if (!res.ok) {
-            const detail = typeof data === "object" ? data.detail || JSON.stringify(data) : data;
-            throw new Error(detail || res.statusText);
-          }
-          return data;
-        } finally {
-          if (submit) {
-            submit.disabled = false;
-            submit.classList.remove("busy");
-            submit.textContent = "Transcribe";
-          }
-        }
-      },
-      msgEl: msg,
-      successText: false,
-      after: (data) => {
-        showMsg(msg, typeof data === "string" ? data : JSON.stringify(data, null, 2), "ok");
-      },
-    }).catch(() => {});
+    submit.disabled = true;
+    submit.textContent = "Transcribing…";
+    showMsg(msg, "Transcribing…", "info");
+    try {
+      const res = await fetch("/v1/audio/transcriptions", {
+        method: "POST",
+        headers: authHeaders(),
+        body: fd,
+      });
+      const ct = res.headers.get("content-type") || "";
+      const data = ct.includes("application/json") ? await res.json() : await res.text();
+      if (!res.ok) {
+        const detail = typeof data === "object" ? data.detail || JSON.stringify(data) : data;
+        throw new Error(detail || res.statusText);
+      }
+      showMsg(msg, typeof data === "string" ? data : JSON.stringify(data, null, 2), "ok");
+    } catch (e) {
+      showMsg(msg, e.message, "error");
+    } finally {
+      submit.disabled = false;
+      submit.textContent = "Transcribe";
+    }
   }
 
-  function btn(label, onClick, cls = "") {
+  function btn(label, onClick, cls = "", disabled = false) {
     const b = document.createElement("button");
     b.type = "button";
     b.textContent = label;
     if (cls) b.className = cls;
+    b.disabled = disabled;
     b.addEventListener("click", onClick);
     return b;
+  }
+
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
   }
 
   function esc(s) {
@@ -548,7 +553,6 @@
     });
 
     $$(".tabs button").forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));
-
     $("#refresh-models")?.addEventListener("click", refreshModels);
     $("#registry-form")?.addEventListener("submit", submitRegistry);
     $("#registry-reset")?.addEventListener("click", resetRegistryForm);
@@ -556,6 +560,7 @@
     $("#refresh-status")?.addEventListener("click", loadStatus);
     $("#try-form")?.addEventListener("submit", tryTranscribe);
 
+    startPolling();
     switchTab("models");
   }
 

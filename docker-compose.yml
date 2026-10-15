@@ -8,6 +8,11 @@ services:
       STT_MODEL_TTL: "300"
       HF_TOKEN: ${HF_TOKEN:-}
       API_KEY: ${API_KEY:-}
+      # Prefer UUID over index — container ordinals do not match nvidia-smi order.
+      # Holocron RTX 4060:
+      NVIDIA_VISIBLE_DEVICES: ${STARLING_GPU_UUID:-GPU-8ee934f5-a686-0f6f-8ff1-925a48f5e211}
+      # Inside the container the pinned GPU is always cuda:0
+      DEVICE_OVERRIDE: ${DEVICE_OVERRIDE:-cuda:0}
     volumes:
       - starling-hf:/cache/huggingface
     deploy:
@@ -15,7 +20,8 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids:
+                - ${STARLING_GPU_UUID:-GPU-8ee934f5-a686-0f6f-8ff1-925a48f5e211}
               capabilities: [gpu]
     restart: unless-stopped
 

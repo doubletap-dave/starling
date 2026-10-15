@@ -38,6 +38,7 @@ class WhisperBackend:
         )
 
     def unload(self, handle: Any) -> None:
+        # Manager drops its ref then calls release_cuda_memory()
         del handle
 
     def transcribe(
