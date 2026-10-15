@@ -307,6 +307,24 @@
     }
   }
 
+  function setRegistryMode(mode, id) {
+    const f = $("#registry-form");
+    const banner = $("#registry-mode");
+    const submit = $("#registry-submit");
+    f.dataset.mode = mode;
+    if (mode === "edit") {
+      f.id.readOnly = true;
+      banner.textContent = `Editing ${id}`;
+      banner.classList.add("editing");
+      submit.textContent = "Save changes";
+    } else {
+      f.id.readOnly = false;
+      banner.textContent = "Adding new entry";
+      banner.classList.remove("editing");
+      submit.textContent = "Add entry";
+    }
+  }
+
   async function refreshRegistry() {
     const tbody = $("#registry-body");
     const msg = $("#registry-msg");
@@ -315,10 +333,11 @@
       tbody.innerHTML = "";
       for (const m of data.data || []) {
         const tr = document.createElement("tr");
+        const source = m.file ? `${m.repo} · ${m.file}` : m.repo;
         tr.innerHTML = `
-          <td><code>${esc(m.id)}</code></td>
+          <td><code>${esc(m.id)}</code>${m.gated ? ' <span class="badge">gated</span>' : ""}</td>
           <td>${esc(m.backend)}</td>
-          <td>${esc(m.repo)}${m.file ? `<br><span class="hint">${esc(m.file)}</span>` : ""}</td>
+          <td class="source-cell">${esc(source)}</td>
           <td class="actions"></td>`;
         const actions = tr.querySelector(".actions");
         actions.append(
@@ -349,7 +368,6 @@
   function fillRegistryForm(m) {
     const f = $("#registry-form");
     f.id.value = m.id;
-    f.id.readOnly = true;
     f.backend.value = m.backend;
     f.repo.value = m.repo || "";
     f.file.value = m.file || "";
@@ -360,17 +378,15 @@
     f.supports_translate.checked = !!m.supports_translate;
     f.supports_timestamps.checked = !!m.supports_timestamps;
     f.license.value = m.license || "";
-    f.dataset.mode = "edit";
-    $("#registry-submit").textContent = "Update entry";
-    f.scrollIntoView({ behavior: "smooth" });
+    setRegistryMode("edit", m.id);
+    f.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
   function resetRegistryForm() {
     const f = $("#registry-form");
     f.reset();
-    f.id.readOnly = false;
-    f.dataset.mode = "create";
-    $("#registry-submit").textContent = "Add entry";
+    f.vram_mb.value = 4096;
+    setRegistryMode("create");
   }
 
   async function submitRegistry(ev) {
@@ -419,8 +435,12 @@
       f.metrics_enabled.checked = !!s.metrics_enabled;
       f.hf_hub_cache.value = s.hf_hub_cache || "";
       f.hf_token.value = "";
-      f.hf_token.placeholder = s.hf_token_set ? "(set — leave blank to keep)" : "(not set)";
-      $("#settings-meta").textContent = `API key ${s.api_key_set ? "is" : "is not"} configured · UI enabled=${s.enable_ui}`;
+      f.hf_token.placeholder = s.hf_token_set
+        ? "Token is set — leave blank to keep"
+        : "Optional — only for gated/private models";
+      $("#settings-meta").textContent = s.api_key_set
+        ? "API key is configured (env). Bind address stays env-only."
+        : "No API key configured. Bind address stays env-only.";
     } catch (e) {
       showMsg(msg, e.message, "error");
     }
@@ -452,12 +472,66 @@
   }
 
   async function loadStatus() {
-    const el = $("#status-json");
+    const view = $("#status-view");
     const msg = $("#status-msg");
     try {
       const s = await api("/v1/admin/status");
-      el.textContent = JSON.stringify(s, null, 2);
       msg.hidden = true;
+      const devices = s.devices || [];
+      const loaded = s.loaded || [];
+      const backends = s.backends || [];
+      const deviceCards = devices
+        .map((d) => {
+          const total = d.total_mb || 0;
+          const free = d.free_mb || 0;
+          const used = Math.max(0, total - free);
+          const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0;
+          const label = d.index == null ? "CPU" : d.name || d.device;
+          const uuid = d.uuid ? `<div class="status-meta">${esc(d.uuid)}</div>` : "";
+          return `
+            <article class="status-card">
+              <h3>${esc(label)}</h3>
+              <div class="status-meta">${esc(d.device || "cpu")}${d.index != null ? ` · index ${d.index}` : ""}</div>
+              ${uuid}
+              ${
+                total > 0
+                  ? `<div class="vram-bar" role="meter" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100">
+                       <i style="width:${pct}%"></i>
+                     </div>
+                     <div class="status-meta">${used} / ${total} MB used · ${free} MB free</div>`
+                  : `<div class="status-meta">No VRAM reported</div>`
+              }
+            </article>`;
+        })
+        .join("");
+      const loadedList =
+        loaded.length === 0
+          ? `<p class="hint">Nothing in VRAM — models load on first use.</p>`
+          : `<ul class="status-list">${loaded
+              .map(
+                (m) =>
+                  `<li><code>${esc(m.id)}</code> · ${esc(m.backend || "?")} · ${esc(m.device || "?")}${
+                    m.vram_mb != null ? ` · ~${m.vram_mb} MB` : ""
+                  }</li>`,
+              )
+              .join("")}</ul>`;
+      view.innerHTML = `
+        <div class="status-summary">
+          <article class="status-card">
+            <h3>Starling ${esc(s.version || "")}</h3>
+            <div class="status-meta">${backends.length} backend${backends.length === 1 ? "" : "s"} · ${esc(
+              backends.join(", ") || "none",
+            )}</div>
+            <div class="status-meta">${s.downloaded_count ?? 0} on disk · ${s.registry_count ?? 0} in registry</div>
+            <div class="status-meta">TTL ${s.settings?.stt_model_ttl ?? "—"}s · device ${esc(
+              s.settings?.device_override || "auto",
+            )}</div>
+          </article>
+        </div>
+        <h3 class="status-section">GPUs</h3>
+        <div class="status-grid">${deviceCards || `<p class="hint">No devices reported.</p>`}</div>
+        <h3 class="status-section">Loaded in VRAM</h3>
+        ${loadedList}`;
     } catch (e) {
       showMsg(msg, e.message, "error");
     }
@@ -465,6 +539,7 @@
 
   async function fillTryModels() {
     const sel = $("#try-model");
+    const preferred = "orukeet";
     try {
       const data = await api("/v1/registry");
       const cur = sel.value;
@@ -475,7 +550,9 @@
         opt.textContent = `${m.id} (${m.backend})`;
         sel.appendChild(opt);
       }
-      if (cur) sel.value = cur;
+      const ids = [...sel.options].map((o) => o.value);
+      if (cur && ids.includes(cur)) sel.value = cur;
+      else if (ids.includes(preferred)) sel.value = preferred;
     } catch (_) {
       /* ignore */
     }
@@ -556,6 +633,10 @@
     $("#refresh-models")?.addEventListener("click", refreshModels);
     $("#registry-form")?.addEventListener("submit", submitRegistry);
     $("#registry-reset")?.addEventListener("click", resetRegistryForm);
+    $("#registry-new")?.addEventListener("click", () => {
+      resetRegistryForm();
+      $("#registry-form")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
     $("#settings-form")?.addEventListener("submit", saveSettings);
     $("#refresh-status")?.addEventListener("click", loadStatus);
     $("#try-form")?.addEventListener("submit", tryTranscribe);

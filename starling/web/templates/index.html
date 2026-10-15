@@ -73,73 +73,122 @@
       <div class="panel-head">
         <div>
           <h2>Registry</h2>
-          <p class="hint">Catalog entries live in <code>models.yaml</code>. Edit here; the API writes the file.</p>
+          <p class="hint">Catalog of known models. Edit writes <code>models.yaml</code>. Use Models to download or load weights.</p>
         </div>
+        <button type="button" id="registry-new" class="secondary">New entry</button>
       </div>
       <div id="registry-msg" class="msg" hidden></div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Backend</th>
-              <th>Repo / file</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="registry-body"></tbody>
-        </table>
-      </div>
 
-      <h2 class="subhead">Add / edit entry</h2>
-      <form id="registry-form" class="stack" data-mode="create">
-        <div class="row">
-          <label>ID <input name="id" required pattern="[A-Za-z0-9._-]+" /></label>
-          <label>Backend
-            <select name="backend">
-              <option value="whisper">whisper</option>
-              <option value="nemo">nemo</option>
-              <option value="transformers">transformers</option>
-            </select>
-          </label>
+      <div class="registry-layout">
+        <div class="table-wrap registry-list">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Backend</th>
+                <th>Source</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="registry-body"></tbody>
+          </table>
         </div>
-        <label>HuggingFace repo <input name="repo" required placeholder="org/model" /></label>
-        <div class="row">
-          <label>File (.nemo) <input name="file" placeholder="model.nemo" /></label>
-          <label>Revision <input name="revision" placeholder="commit sha" /></label>
-        </div>
-        <div class="row">
-          <label>VRAM estimate (MB) <input name="vram_mb" type="number" value="4096" /></label>
-          <label>License <input name="license" /></label>
-        </div>
-        <label class="check"><input name="requires_language" type="checkbox" /> Requires language</label>
-        <label class="check"><input name="gated" type="checkbox" /> Gated</label>
-        <label class="check"><input name="supports_translate" type="checkbox" /> Supports translate</label>
-        <label class="check"><input name="supports_timestamps" type="checkbox" /> Supports timestamps</label>
-        <div class="toolbar">
-          <button type="submit" id="registry-submit">Add entry</button>
-          <button type="button" id="registry-reset" class="secondary">Reset form</button>
-        </div>
-      </form>
+
+        <form id="registry-form" class="stack editor-card" data-mode="create">
+          <div class="editor-banner" id="registry-mode">Adding new entry</div>
+          <fieldset class="field-group">
+            <legend>Identity</legend>
+            <div class="row">
+              <label>ID <input name="id" required pattern="[A-Za-z0-9._-]+" placeholder="orukeet" /></label>
+              <label>Backend
+                <select name="backend">
+                  <option value="whisper">whisper</option>
+                  <option value="nemo">nemo</option>
+                  <option value="transformers">transformers</option>
+                </select>
+              </label>
+            </div>
+          </fieldset>
+          <fieldset class="field-group">
+            <legend>Hugging Face source</legend>
+            <label>Repo <input name="repo" required placeholder="org/model" /></label>
+            <div class="row">
+              <label>File (.nemo) <input name="file" placeholder="optional single file" /></label>
+              <label>Revision <input name="revision" placeholder="commit sha" /></label>
+            </div>
+            <label>License <input name="license" placeholder="MIT, CC-BY-SA-4.0, …" /></label>
+          </fieldset>
+          <fieldset class="field-group">
+            <legend>Runtime hints</legend>
+            <label>VRAM estimate (MB) <input name="vram_mb" type="number" value="4096" /></label>
+            <div class="checks">
+              <label class="check"><input name="requires_language" type="checkbox" /> Requires language</label>
+              <label class="check"><input name="gated" type="checkbox" /> Gated (needs HF token)</label>
+              <label class="check"><input name="supports_translate" type="checkbox" /> Supports translate</label>
+              <label class="check"><input name="supports_timestamps" type="checkbox" /> Supports timestamps</label>
+            </div>
+          </fieldset>
+          <div class="toolbar">
+            <button type="submit" id="registry-submit">Add entry</button>
+            <button type="button" id="registry-reset" class="secondary">Cancel</button>
+          </div>
+        </form>
+      </div>
     </section>
 
     <section id="panel-settings" class="panel">
       <div class="panel-head">
         <div>
           <h2>Settings</h2>
-          <p class="hint" id="settings-meta">Runtime overrides persist to <code>config/runtime.yaml</code>. API key and bind address stay env-only.</p>
+          <p class="hint" id="settings-meta">Runtime overrides save to <code>config/runtime.yaml</code>. API key and bind address stay env-only.</p>
         </div>
       </div>
       <div id="settings-msg" class="msg" hidden></div>
-      <form id="settings-form" class="stack">
-        <label>STT model TTL (seconds) <input name="stt_model_ttl" type="number" /></label>
-        <label>Device override <input name="device_override" placeholder="cpu | cuda:0 | GPU-&lt;uuid&gt; | empty=auto" /></label>
-        <label>Whisper compute type <input name="whisper_compute_type" placeholder="default | float16 | int8" /></label>
-        <label>Preload models (comma-separated) <input name="preload_models" /></label>
-        <label>HF hub cache path <input name="hf_hub_cache" /></label>
-        <label>HF token (write-only) <input name="hf_token" type="password" autocomplete="off" /></label>
-        <label class="check"><input name="metrics_enabled" type="checkbox" /> Metrics enabled</label>
-        <button type="submit">Save settings</button>
+      <form id="settings-form" class="settings-form">
+        <fieldset class="field-group">
+          <legend>Runtime</legend>
+          <label>
+            Idle unload TTL (seconds)
+            <input name="stt_model_ttl" type="number" />
+            <span class="field-hint">Unload from VRAM after this many idle seconds. <code>-1</code> = never, <code>0</code> = immediate.</span>
+          </label>
+          <label>
+            Device override
+            <input name="device_override" placeholder="empty = auto · cuda:0 · GPU-&lt;uuid&gt; · cpu" />
+            <span class="field-hint">Leave empty to pick the freest GPU. UUID pin is preferred over index.</span>
+          </label>
+          <label>
+            Whisper compute type
+            <input name="whisper_compute_type" placeholder="default | float16 | int8" />
+          </label>
+          <label>
+            Ensure downloaded on startup
+            <input name="preload_models" placeholder="orukeet, whisper-tiny" />
+            <span class="field-hint">Comma-separated model ids. Downloaded to disk at boot — <strong>not</strong> loaded into VRAM until first use.</span>
+          </label>
+          <label class="check"><input name="metrics_enabled" type="checkbox" /> Prometheus metrics enabled</label>
+        </fieldset>
+
+        <fieldset class="field-group">
+          <legend>Hugging Face</legend>
+          <p class="field-note">
+            A token is <strong>not required</strong> for public models (orukeet, Whisper, most Parakeet).
+            Set one only for <em>gated or private</em> repos (e.g. Cohere Transcribe) after accepting the model license on Hugging Face.
+          </p>
+          <label>
+            Access token (optional)
+            <input name="hf_token" type="password" autocomplete="off" />
+            <span class="field-hint">Write-only. Leave blank to keep the current token unchanged.</span>
+          </label>
+          <label>
+            Hub cache path
+            <input name="hf_hub_cache" placeholder="default Hugging Face cache" />
+          </label>
+        </fieldset>
+
+        <div class="toolbar">
+          <button type="submit">Save settings</button>
+        </div>
       </form>
     </section>
 
@@ -147,13 +196,13 @@
       <div class="panel-head">
         <div>
           <h2>Status</h2>
-          <p class="hint">Live snapshot from <code>GET /v1/admin/status</code>.</p>
+          <p class="hint">What’s running right now — GPUs, loaded models, and backends.</p>
         </div>
         <button type="button" id="refresh-status" class="secondary">Refresh</button>
       </div>
       <div id="status-msg" class="msg" hidden></div>
-      <div class="status-grid">
-        <pre id="status-json">{}</pre>
+      <div id="status-view" class="status-view">
+        <p class="hint">Loading…</p>
       </div>
     </section>
 

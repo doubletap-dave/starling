@@ -6,6 +6,8 @@ services:
     environment:
       HF_HUB_CACHE: /cache/huggingface
       STT_MODEL_TTL: "300"
+      # Download on boot only — does not occupy VRAM until first use
+      PRELOAD_MODELS: ${PRELOAD_MODELS:-["orukeet"]}
       HF_TOKEN: ${HF_TOKEN:-}
       API_KEY: ${API_KEY:-}
       # Prefer UUID over index — container ordinals do not match nvidia-smi order.

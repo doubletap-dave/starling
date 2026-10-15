@@ -65,12 +65,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             list(backends.keys()),
         )
 
+        # PRELOAD_MODELS = ensure on disk only; VRAM stays free until first request/load.
         for mid in cfg.preload_models:
             try:
-                manager.load(mid)
-                logger.info("Preloaded model %s", mid)
+                entry = registry.require(mid)
+                manager.ensure_downloaded(entry)
+                logger.info("Ensured model %s is on disk (not loaded into VRAM)", mid)
             except Exception:
-                logger.exception("Failed to preload %s", mid)
+                logger.exception("Failed to ensure download for %s", mid)
                 raise
 
         yield

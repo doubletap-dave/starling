@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MUTABLE_SETTING_KEYS = (
@@ -29,6 +29,22 @@ def _default_runtime_path() -> Path:
     return Path(__file__).resolve().parent.parent / "config" / "runtime.yaml"
 
 
+def preload_models_from_env(raw: str | list[str] | None) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return raw
+    import json
+
+    raw = raw.strip()
+    if not raw:
+        return []
+    if raw.startswith("["):
+        data: Any = json.loads(raw)
+        return list(data)
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -44,8 +60,15 @@ class Settings(BaseSettings):
     registry_path: Path = Field(default_factory=_default_registry_path)
     runtime_config_path: Path = Field(default_factory=_default_runtime_path)
     hf_hub_cache: Path | None = None
-    hf_token: str | None = None
-    preload_models: list[str] = Field(default_factory=list)
+    hf_token: str | None = Field(
+        default=None,
+        description="Optional. Only needed for gated/private Hugging Face repos (e.g. Cohere).",
+    )
+    # Download on startup only — does not load into VRAM (see app lifespan).
+    preload_models: list[str] = Field(
+        default_factory=lambda: ["orukeet"],
+        description="Model ids to download on startup; kept on disk, loaded on first use",
+    )
 
     # Optional device pinning: "cuda:0", "cpu", or empty for auto
     device_override: str | None = None
@@ -56,24 +79,13 @@ class Settings(BaseSettings):
 
     enable_ui: bool = True
 
+    @field_validator("preload_models", mode="before")
+    @classmethod
+    def _parse_preload_models(cls, value: Any) -> list[str]:
+        return preload_models_from_env(value)
+
 
 settings = Settings()
-
-
-def preload_models_from_env(raw: str | list[str] | None) -> list[str]:
-    if raw is None:
-        return []
-    if isinstance(raw, list):
-        return raw
-    import json
-
-    raw = raw.strip()
-    if not raw:
-        return []
-    if raw.startswith("["):
-        data: Any = json.loads(raw)
-        return list(data)
-    return [p.strip() for p in raw.split(",") if p.strip()]
 
 
 def load_runtime_overlay(path: Path) -> dict[str, Any]:
