@@ -3,10 +3,10 @@ revision = 3
 requires-python = ">=3.12, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'win32'",
-    "python_full_version < '3.13' and sys_platform == 'win32'",
     "python_full_version >= '3.13' and sys_platform == 'emscripten'",
-    "python_full_version < '3.13' and sys_platform == 'emscripten'",
     "python_full_version >= '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.13' and sys_platform == 'win32'",
+    "python_full_version < '3.13' and sys_platform == 'emscripten'",
     "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
@@ -2673,6 +2673,7 @@ dependencies = [
     { name = "faster-whisper" },
     { name = "httpx" },
     { name = "huggingface-hub" },
+    { name = "jinja2" },
     { name = "librosa" },
     { name = "numpy" },
     { name = "prometheus-client" },
@@ -2701,6 +2702,7 @@ requires-dist = [
     { name = "faster-whisper", specifier = ">=1.1.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "huggingface-hub", specifier = ">=0.26.0" },
+    { name = "jinja2", specifier = ">=3.1.0" },
     { name = "librosa", specifier = ">=0.10.2" },
     { name = "nemo-toolkit", extras = ["asr"], marker = "extra == 'nemo'", specifier = ">=3.0.0" },
     { name = "numpy", specifier = ">=1.26.0" },

@@ -8,6 +8,7 @@ dist/
 build/
 *.egg-info/
 .env
+config/runtime.yaml
 .cache/
 *.wav
 *.nemo

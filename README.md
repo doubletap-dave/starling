@@ -15,6 +15,8 @@ uv run starling
 # or: uv run uvicorn starling.api.app:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
+Open the admin UI at **http://localhost:8000/** — models, registry editor, settings, status, and a try-transcription form. The UI only talks to the HTTP API (paste your `API_KEY` in the bar if auth is enabled).
+
 Whisper-only (skip heavy NeMo layer):
 
 ```bash
@@ -29,10 +31,11 @@ curl http://localhost:8000/v1/audio/transcriptions \
   -F model=whisper-tiny
 ```
 
-First request downloads the model from HuggingFace. Pre-warm:
+First request downloads the model from HuggingFace. Pre-warm / load:
 
 ```bash
 curl -X POST http://localhost:8000/v1/models/whisper-tiny
+curl -X POST http://localhost:8000/v1/models/whisper-tiny/load
 ```
 
 ### OpenAI client
@@ -49,20 +52,31 @@ with open("audio.wav", "rb") as f:
 
 | Method | Path | Notes |
 |--------|------|-------|
+| GET | `/` | Admin UI (public shell; APIs still auth-gated) |
 | GET | `/health` | Liveness (public) |
 | GET | `/metrics` | Prometheus |
+| GET | `/v1/admin/status` | Devices, loaded models, backends |
+| GET/PATCH | `/v1/admin/settings` | Runtime settings (`hf_token` write-only / masked) |
 | GET | `/v1/registry` | Full catalog + downloaded/loaded flags |
+| POST | `/v1/registry` | Create catalog entry → `models.yaml` |
+| PUT | `/v1/registry/{id}` | Update entry |
+| DELETE | `/v1/registry/{id}` | Remove entry (`?purge=true` also drops disk file when possible) |
 | GET | `/v1/models` | Downloaded models (OpenAI list) |
+| GET | `/v1/models/{id}` | Model detail + placement if loaded |
 | POST | `/v1/models/{id}` | Explicit download |
+| POST | `/v1/models/{id}/load` | Load into VRAM |
+| POST | `/v1/models/{id}/unload` | Unload from VRAM |
 | DELETE | `/v1/models/{id}?purge=true` | Unload (+ optional cache purge) |
 | POST | `/v1/audio/transcriptions` | STT (lazy download) |
 | POST | `/v1/audio/translations` | Whisper translate-capable models only |
 
 Set `API_KEY` to require `Authorization: Bearer …` on protected routes.
 
+Runtime overrides from the UI/API persist to `config/runtime.yaml` (gitignored). Env remains the bootstrap source. `API_KEY` / bind host-port are not editable via the UI.
+
 ## Models
 
-See [`config/models.yaml`](config/models.yaml). Notable pins:
+See [`config/models.yaml`](config/models.yaml) (also editable via UI/API). Notable pins:
 
 - `whisper-turbo` → `deepdml/faster-whisper-large-v3-turbo-ct2`
 - `orukeet` → revision `555136b50265a132d4cea0d35560c26fc4f657ab`
@@ -83,6 +97,8 @@ Starling discovers CUDA devices and places loads on the GPU with the most free V
 | `PRELOAD_MODELS` | `[]` | JSON list of model ids |
 | `DEVICE_OVERRIDE` | unset | `cpu` / `cuda:N` / `auto` |
 | `WHISPER_COMPUTE_TYPE` | `default` | CT2 compute type |
+| `RUNTIME_CONFIG_PATH` | `config/runtime.yaml` | Mutable settings overlay |
+| `ENABLE_UI` | `true` | Serve admin UI at `/` |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind |
 
 ## Docker

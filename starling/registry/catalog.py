@@ -9,6 +9,7 @@ from huggingface_hub import hf_hub_download, snapshot_download
 from huggingface_hub.utils import EntryNotFoundError
 
 BackendName = Literal["whisper", "nemo", "transformers"]
+VALID_BACKENDS = frozenset({"whisper", "nemo", "transformers"})
 
 
 @dataclass
@@ -43,10 +44,18 @@ class ModelEntry:
             "license",
         }
         extra = {k: v for k, v in data.items() if k not in known}
+        backend = data.get("backend")
+        if backend not in VALID_BACKENDS:
+            raise ValueError(f"backend must be one of {sorted(VALID_BACKENDS)}")
+        repo = data.get("repo")
+        if not repo:
+            raise ValueError("repo is required")
+        if backend == "nemo" and not data.get("file"):
+            raise ValueError("file is required for nemo backend")
         return cls(
             id=model_id,
-            backend=data["backend"],
-            repo=data["repo"],
+            backend=backend,
+            repo=repo,
             file=data.get("file"),
             revision=data.get("revision"),
             vram_mb=int(data.get("vram_mb", 4096)),
@@ -59,6 +68,26 @@ class ModelEntry:
             extra=extra,
         )
 
+    def to_yaml_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "backend": self.backend,
+            "repo": self.repo,
+            "vram_mb": self.vram_mb,
+            "requires_language": self.requires_language,
+            "gated": self.gated,
+            "languages": self.languages,
+            "supports_translate": self.supports_translate,
+            "supports_timestamps": self.supports_timestamps,
+        }
+        if self.file:
+            d["file"] = self.file
+        if self.revision:
+            d["revision"] = self.revision
+        if self.license:
+            d["license"] = self.license
+        d.update(self.extra)
+        return d
+
 
 class ModelRegistry:
     def __init__(self, path: Path, token: str | None = None, cache_dir: Path | None = None) -> None:
@@ -69,10 +98,21 @@ class ModelRegistry:
         self.reload()
 
     def reload(self) -> None:
+        if not self.path.exists():
+            self._models = {}
+            return
         with self.path.open(encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         models = data.get("models") or {}
         self._models = {mid: ModelEntry.from_dict(mid, meta) for mid, meta in models.items()}
+
+    def save(self) -> None:
+        payload = {"models": {mid: e.to_yaml_dict() for mid, e in self._models.items()}}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            yaml.safe_dump(payload, f, sort_keys=False, default_flow_style=False)
+        tmp.replace(self.path)
 
     def get(self, model_id: str) -> ModelEntry | None:
         return self._models.get(model_id)
@@ -89,6 +129,36 @@ class ModelRegistry:
     def ids(self) -> list[str]:
         return list(self._models.keys())
 
+    def create(self, model_id: str, data: dict[str, Any]) -> ModelEntry:
+        if not model_id or "/" in model_id or "\\" in model_id:
+            raise ValueError("invalid model id")
+        if model_id in self._models:
+            raise ValueError(f"model '{model_id}' already exists")
+        entry = ModelEntry.from_dict(model_id, data)
+        self._models[model_id] = entry
+        self.save()
+        return entry
+
+    def update(self, model_id: str, data: dict[str, Any]) -> ModelEntry:
+        if model_id not in self._models:
+            raise KeyError(model_id)
+        existing = self._models[model_id].to_yaml_dict()
+        for k, v in data.items():
+            if v is None and k in ("file", "revision", "license"):
+                existing.pop(k, None)
+            else:
+                existing[k] = v
+        entry = ModelEntry.from_dict(model_id, existing)
+        self._models[model_id] = entry
+        self.save()
+        return entry
+
+    def delete(self, model_id: str) -> None:
+        if model_id not in self._models:
+            raise KeyError(model_id)
+        del self._models[model_id]
+        self.save()
+
     def is_downloaded(self, entry: ModelEntry) -> bool:
         try:
             if entry.file:
@@ -101,7 +171,6 @@ class ModelRegistry:
                     local_files_only=True,
                 )
                 return Path(path).exists()
-            # Directory snapshot presence: try local-only snapshot
             snapshot_download(
                 repo_id=entry.repo,
                 revision=entry.revision,
@@ -137,12 +206,26 @@ class ModelRegistry:
             return None
 
     def purge(self, entry: ModelEntry) -> None:
-        """Best-effort: HuggingFace cache cleanup is complex; re-download after delete of snapshot is OK.
-
-        We mark purge by removing the specific file when present; otherwise no-op with guidance.
-        """
         path = self.local_path(entry)
         if path and entry.file:
             p = Path(path)
             if p.is_file():
                 p.unlink(missing_ok=True)
+
+    def entry_public_dict(self, entry: ModelEntry, *, downloaded: bool, loaded: bool) -> dict[str, Any]:
+        return {
+            "id": entry.id,
+            "backend": entry.backend,
+            "repo": entry.repo,
+            "file": entry.file,
+            "revision": entry.revision,
+            "gated": entry.gated,
+            "requires_language": entry.requires_language,
+            "supports_translate": entry.supports_translate,
+            "supports_timestamps": entry.supports_timestamps,
+            "languages": entry.languages,
+            "vram_mb": entry.vram_mb,
+            "license": entry.license,
+            "downloaded": downloaded,
+            "loaded": loaded,
+        }

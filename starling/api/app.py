@@ -2,20 +2,24 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import Depends, FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from starling import __version__
+from starling.api.admin import router as admin_router
 from starling.api.auth import make_auth_dependency
 from starling.api.routes import router
 from starling.backends.nemo import NemoBackend
 from starling.backends.transformers import TransformersBackend
 from starling.backends.whisper import WhisperBackend
-from starling.config import Settings, settings as default_settings
+from starling.config import Settings, bootstrap_settings, settings as default_settings
 from starling.gpu.placer import GpuPlacer
 from starling.lifecycle.manager import ModelManager
 from starling.registry.catalog import ModelRegistry
+from starling.web.routes import router as web_router
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +41,7 @@ def _build_backends(settings: Settings) -> dict:
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    cfg = settings or default_settings
+    cfg = bootstrap_settings(settings if settings is not None else default_settings)
     auth_dep = make_auth_dependency(cfg)
 
     @asynccontextmanager
@@ -82,4 +86,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         dependencies=[Depends(auth_dep)],
     )
     app.include_router(router)
+    app.include_router(admin_router)
+
+    if cfg.enable_ui:
+        static_dir = Path(__file__).resolve().parent.parent / "web" / "static"
+        static_dir.mkdir(parents=True, exist_ok=True)
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+        app.include_router(web_router)
+
     return app

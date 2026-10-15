@@ -4,12 +4,15 @@ import logging
 import time
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import PlainTextResponse, Response
 
-from starling.api.formats import format_transcript
-from starling.audio.normalize import load_audio_16k_mono
 from starling import metrics as M
+from starling.api.deps import get_manager, get_registry, get_settings
+from starling.config import Settings
+from starling.api.formats import format_transcript
+from starling.api.schemas import RegistryEntryCreate, RegistryEntryUpdate
+from starling.audio.normalize import load_audio_16k_mono
 from starling.lifecycle.manager import ModelManager
 from starling.registry.catalog import ModelRegistry
 
@@ -18,12 +21,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def get_manager(request: Request) -> ModelManager:
-    return request.app.state.manager
-
-
-def get_registry(request: Request) -> ModelRegistry:
-    return request.app.state.registry
+def _entry_view(registry: ModelRegistry, manager: ModelManager, model_id: str) -> dict[str, Any]:
+    entry = registry.require(model_id)
+    loaded = model_id in manager.loaded_ids()
+    data = registry.entry_public_dict(
+        entry,
+        downloaded=registry.is_downloaded(entry),
+        loaded=loaded,
+    )
+    if loaded:
+        lm = manager._loaded.get(model_id)
+        if lm is not None:
+            data["placement"] = {
+                "device": lm.placement.device,
+                "device_index": lm.placement.device_index,
+                "use_device_map": lm.placement.use_device_map,
+            }
+    return data
 
 
 @router.get("/health")
@@ -32,8 +46,10 @@ async def health() -> dict[str, str]:
 
 
 @router.get("/metrics")
-async def prometheus_metrics(request: Request) -> Response:
-    if not getattr(request.app.state.settings, "metrics_enabled", True):
+async def prometheus_metrics(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    if not settings.metrics_enabled:
         raise HTTPException(404, "Metrics disabled")
     body, content_type = M.metrics_response()
     return Response(content=body, media_type=content_type)
@@ -44,28 +60,69 @@ async def list_registry(
     registry: Annotated[ModelRegistry, Depends(get_registry)],
     manager: Annotated[ModelManager, Depends(get_manager)],
 ) -> dict[str, Any]:
-    items = []
-    loaded = set(manager.loaded_ids())
-    for entry in registry.all():
-        downloaded = registry.is_downloaded(entry)
-        items.append(
-            {
-                "id": entry.id,
-                "backend": entry.backend,
-                "repo": entry.repo,
-                "revision": entry.revision,
-                "gated": entry.gated,
-                "requires_language": entry.requires_language,
-                "supports_translate": entry.supports_translate,
-                "supports_timestamps": entry.supports_timestamps,
-                "languages": entry.languages,
-                "vram_mb": entry.vram_mb,
-                "license": entry.license,
-                "downloaded": downloaded,
-                "loaded": entry.id in loaded,
-            }
+    items = [
+        registry.entry_public_dict(
+            entry,
+            downloaded=registry.is_downloaded(entry),
+            loaded=entry.id in manager.loaded_ids(),
         )
+        for entry in registry.all()
+    ]
     return {"object": "list", "data": items}
+
+
+@router.post("/v1/registry")
+async def create_registry_entry(
+    body: RegistryEntryCreate,
+    registry: Annotated[ModelRegistry, Depends(get_registry)],
+    manager: Annotated[ModelManager, Depends(get_manager)],
+) -> dict[str, Any]:
+    data = body.model_dump(exclude={"id"})
+    try:
+        entry = registry.create(body.id, data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return registry.entry_public_dict(entry, downloaded=False, loaded=False)
+
+
+@router.put("/v1/registry/{model_id}")
+async def update_registry_entry(
+    model_id: str,
+    body: RegistryEntryUpdate,
+    registry: Annotated[ModelRegistry, Depends(get_registry)],
+    manager: Annotated[ModelManager, Depends(get_manager)],
+) -> dict[str, Any]:
+    if model_id in manager.loaded_ids():
+        raise HTTPException(409, f"Model '{model_id}' is loaded; unload before editing")
+    try:
+        entry = registry.update(model_id, body.model_dump(exclude_unset=True))
+    except KeyError:
+        raise HTTPException(404, f"Unknown model '{model_id}'") from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _entry_view(registry, manager, entry.id)
+
+
+@router.delete("/v1/registry/{model_id}")
+async def delete_registry_entry(
+    model_id: str,
+    registry: Annotated[ModelRegistry, Depends(get_registry)],
+    manager: Annotated[ModelManager, Depends(get_manager)],
+    purge: bool = Query(False),
+) -> dict[str, Any]:
+    if model_id in manager.loaded_ids():
+        raise HTTPException(409, f"Model '{model_id}' is loaded; unload before deleting from registry")
+    try:
+        entry = registry.require(model_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown model '{model_id}'") from None
+    if purge:
+        registry.purge(entry)
+    try:
+        registry.delete(model_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown model '{model_id}'") from None
+    return {"id": model_id, "deleted": True, "purged": purge}
 
 
 @router.get("/v1/models")
@@ -89,7 +146,53 @@ async def list_models(
     return {"object": "list", "data": data}
 
 
-@router.post("/v1/models/{model_id:path}")
+@router.get("/v1/models/{model_id}")
+async def get_model(
+    model_id: str,
+    registry: Annotated[ModelRegistry, Depends(get_registry)],
+    manager: Annotated[ModelManager, Depends(get_manager)],
+) -> dict[str, Any]:
+    try:
+        return _entry_view(registry, manager, model_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown model '{model_id}'") from None
+
+
+@router.post("/v1/models/{model_id}/load")
+async def load_model(
+    model_id: str,
+    registry: Annotated[ModelRegistry, Depends(get_registry)],
+    manager: Annotated[ModelManager, Depends(get_manager)],
+) -> dict[str, Any]:
+    try:
+        registry.require(model_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown model '{model_id}'") from None
+    try:
+        manager.load(model_id)
+    except Exception as exc:
+        logger.exception("Load failed for %s", model_id)
+        raise HTTPException(500, f"Load failed: {exc}") from exc
+    M.MODELS_LOADED.set(len(manager.loaded_ids()))
+    return _entry_view(registry, manager, model_id)
+
+
+@router.post("/v1/models/{model_id}/unload")
+async def unload_model(
+    model_id: str,
+    registry: Annotated[ModelRegistry, Depends(get_registry)],
+    manager: Annotated[ModelManager, Depends(get_manager)],
+) -> dict[str, Any]:
+    try:
+        registry.require(model_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown model '{model_id}'") from None
+    unloaded = manager.unload(model_id)
+    M.MODELS_LOADED.set(len(manager.loaded_ids()))
+    return {"id": model_id, "unloaded": unloaded, **_entry_view(registry, manager, model_id)}
+
+
+@router.post("/v1/models/{model_id}")
 async def download_model(
     model_id: str,
     registry: Annotated[ModelRegistry, Depends(get_registry)],
@@ -116,7 +219,7 @@ async def download_model(
     return {"id": model_id, "status": "downloaded", "code": 200}
 
 
-@router.delete("/v1/models/{model_id:path}")
+@router.delete("/v1/models/{model_id}")
 async def delete_model(
     model_id: str,
     registry: Annotated[ModelRegistry, Depends(get_registry)],
@@ -133,6 +236,7 @@ async def delete_model(
     if purge:
         registry.purge(entry)
         purged = True
+    M.MODELS_LOADED.set(len(manager.loaded_ids()))
     return {"id": model_id, "unloaded": unloaded, "purged": purged}
 
 

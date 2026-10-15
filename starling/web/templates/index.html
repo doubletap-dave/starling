@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title }} — STT</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;650&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/app.css" />
+  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <h1 class="brand">Starling</h1>
+    <p class="tagline">Manage models, registry, and runtime settings. Every action goes through the HTTP API.</p>
+
+    <div class="auth-bar">
+      <label>
+        API key (Bearer)
+        <input id="api-key" type="password" autocomplete="off" placeholder="Leave empty if auth disabled" />
+      </label>
+      <button type="button" id="save-key" class="secondary">Save key</button>
+    </div>
+    <div id="auth-msg" class="msg" hidden></div>
+
+    <nav class="tabs" aria-label="Sections">
+      <button type="button" data-tab="models" class="active">Models</button>
+      <button type="button" data-tab="registry">Registry</button>
+      <button type="button" data-tab="settings">Settings</button>
+      <button type="button" data-tab="status">Status</button>
+      <button type="button" data-tab="try">Try</button>
+    </nav>
+
+    <section id="panel-models" class="panel active">
+      <h2>Models</h2>
+      <p class="hint">Download to disk, load into VRAM, unload, or purge cache. IDs come from the registry.</p>
+      <div class="toolbar">
+        <button type="button" id="refresh-models" class="secondary">Refresh</button>
+      </div>
+      <div id="models-msg" class="msg" hidden></div>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Backend</th>
+            <th>Repo</th>
+            <th>VRAM</th>
+            <th>State</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="models-body"></tbody>
+      </table>
+    </section>
+
+    <section id="panel-registry" class="panel">
+      <h2>Registry</h2>
+      <p class="hint">Add or edit catalog entries written to <code>models.yaml</code>.</p>
+      <div id="registry-msg" class="msg" hidden></div>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Backend</th>
+            <th>Repo / file</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="registry-body"></tbody>
+      </table>
+
+      <h2 style="margin-top:1.75rem">Add / edit entry</h2>
+      <form id="registry-form" class="stack" data-mode="create">
+        <div class="row">
+          <label>ID <input name="id" required pattern="[A-Za-z0-9._-]+" /></label>
+          <label>Backend
+            <select name="backend">
+              <option value="whisper">whisper</option>
+              <option value="nemo">nemo</option>
+              <option value="transformers">transformers</option>
+            </select>
+          </label>
+        </div>
+        <label>HuggingFace repo <input name="repo" required placeholder="org/model" /></label>
+        <div class="row">
+          <label>File (.nemo) <input name="file" placeholder="model.nemo" /></label>
+          <label>Revision <input name="revision" placeholder="commit sha" /></label>
+        </div>
+        <div class="row">
+          <label>VRAM estimate (MB) <input name="vram_mb" type="number" value="4096" /></label>
+          <label>License <input name="license" /></label>
+        </div>
+        <label class="check"><input name="requires_language" type="checkbox" /> Requires language</label>
+        <label class="check"><input name="gated" type="checkbox" /> Gated</label>
+        <label class="check"><input name="supports_translate" type="checkbox" /> Supports translate</label>
+        <label class="check"><input name="supports_timestamps" type="checkbox" /> Supports timestamps</label>
+        <div class="toolbar">
+          <button type="submit" id="registry-submit">Add entry</button>
+          <button type="button" id="registry-reset" class="secondary">Reset form</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="panel-settings" class="panel">
+      <h2>Settings</h2>
+      <p class="hint" id="settings-meta">Runtime overrides persist to <code>config/runtime.yaml</code>. API key and bind address stay env-only.</p>
+      <div id="settings-msg" class="msg" hidden></div>
+      <form id="settings-form" class="stack">
+        <label>STT model TTL (seconds) <input name="stt_model_ttl" type="number" /></label>
+        <label>Device override <input name="device_override" placeholder="cpu | cuda:0 | empty=auto" /></label>
+        <label>Whisper compute type <input name="whisper_compute_type" placeholder="default | float16 | int8" /></label>
+        <label>Preload models (comma-separated) <input name="preload_models" /></label>
+        <label>HF hub cache path <input name="hf_hub_cache" /></label>
+        <label>HF token (write-only) <input name="hf_token" type="password" autocomplete="off" /></label>
+        <label class="check"><input name="metrics_enabled" type="checkbox" /> Metrics enabled</label>
+        <button type="submit">Save settings</button>
+      </form>
+    </section>
+
+    <section id="panel-status" class="panel">
+      <h2>Status</h2>
+      <div class="toolbar">
+        <button type="button" id="refresh-status" class="secondary">Refresh</button>
+      </div>
+      <div id="status-msg" class="msg" hidden></div>
+      <div class="status-grid">
+        <pre id="status-json">{}</pre>
+      </div>
+    </section>
+
+    <section id="panel-try" class="panel">
+      <h2>Try transcription</h2>
+      <p class="hint">Posts to <code>POST /v1/audio/transcriptions</code>.</p>
+      <div id="try-msg" class="msg" hidden></div>
+      <form id="try-form" class="stack">
+        <label>Model
+          <select name="model" id="try-model"></select>
+        </label>
+        <label>Language (required for Cohere) <input name="language" placeholder="en" /></label>
+        <label>Response format
+          <select name="response_format">
+            <option value="json">json</option>
+            <option value="verbose_json">verbose_json</option>
+            <option value="text">text</option>
+            <option value="srt">srt</option>
+            <option value="vtt">vtt</option>
+          </select>
+        </label>
+        <label>Audio file <input name="file" type="file" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a" required /></label>
+        <button type="submit">Transcribe</button>
+      </form>
+    </section>
+  </div>
+</body>
+</html>
