@@ -66,7 +66,7 @@ with open("audio.wav", "rb") as f:
 | POST | `/v1/models/{id}` | Explicit download |
 | POST | `/v1/models/{id}/load` | Load into VRAM |
 | POST | `/v1/models/{id}/unload` | Unload from VRAM |
-| DELETE | `/v1/models/{id}?purge=true` | Unload (+ optional cache purge) |
+| DELETE | `/v1/models/{id}?purge=true` | Unload and delete Hub cache files for that model (registry entry kept) |
 | POST | `/v1/audio/transcriptions` | STT (lazy download) |
 | POST | `/v1/audio/translations` | Whisper translate-capable models only |
 

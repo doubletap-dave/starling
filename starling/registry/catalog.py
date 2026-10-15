@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import logging
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub import hf_hub_download, scan_cache_dir, snapshot_download
 from huggingface_hub.utils import EntryNotFoundError
+
+logger = logging.getLogger(__name__)
 
 BackendName = Literal["whisper", "nemo", "transformers"]
 VALID_BACKENDS = frozenset({"whisper", "nemo", "transformers"})
@@ -227,12 +231,101 @@ class ModelRegistry:
         except EntryNotFoundError:
             return None
 
-    def purge(self, entry: ModelEntry) -> None:
-        path = self.local_path(entry)
-        if path and entry.file:
+    def purge(self, entry: ModelEntry) -> dict[str, Any]:
+        """Remove cached Hub files for this entry from disk.
+
+        Keeps the registry catalog entry. Uses huggingface_hub's cache manager so
+        snapshot models (Whisper/Transformers) and single-file NeMo weights are both
+        removed — the previous implementation only unlinked ``entry.file`` and was a
+        no-op for snapshot downloads.
+        """
+        result: dict[str, Any] = {
+            "repo": entry.repo,
+            "freed_bytes": 0,
+            "revisions_deleted": 0,
+            "method": None,
+        }
+
+        try:
+            cache_info = scan_cache_dir(self.cache_dir)
+        except Exception as exc:
+            logger.warning("scan_cache_dir failed: %s", exc)
+            cache_info = None
+
+        if cache_info is not None:
+            hashes: list[str] = []
+            for repo in cache_info.repos:
+                if repo.repo_id != entry.repo:
+                    continue
+                for rev in repo.revisions:
+                    if self._revision_matches(rev, entry.revision):
+                        hashes.append(rev.commit_hash)
+            if hashes:
+                strategy = cache_info.delete_revisions(*hashes)
+                freed = int(getattr(strategy, "expected_freed_size", 0) or 0)
+                strategy.execute()
+                result.update(
+                    {
+                        "freed_bytes": freed,
+                        "revisions_deleted": len(hashes),
+                        "method": "hf_cache",
+                    }
+                )
+                return result
+
+        # Fallback: remove known local file or whole hub repo folder if present
+        path = None
+        try:
+            if entry.file:
+                path = hf_hub_download(
+                    repo_id=entry.repo,
+                    filename=entry.file,
+                    revision=entry.revision,
+                    token=self.token,
+                    cache_dir=self.cache_dir,
+                    local_files_only=True,
+                )
+        except Exception:
+            path = None
+
+        if path:
             p = Path(path)
             if p.is_file():
                 p.unlink(missing_ok=True)
+                result.update({"freed_bytes": 0, "method": "unlink_file"})
+                return result
+
+        repo_dir = self._hub_repo_dir(entry.repo)
+        if repo_dir is not None and repo_dir.is_dir():
+            size = sum(f.stat().st_size for f in repo_dir.rglob("*") if f.is_file())
+            shutil.rmtree(repo_dir, ignore_errors=True)
+            result.update({"freed_bytes": size, "method": "rmtree", "path": str(repo_dir)})
+            return result
+
+        result["method"] = "noop"
+        return result
+
+    @staticmethod
+    def _revision_matches(rev: Any, wanted: str | None) -> bool:
+        if not wanted:
+            return True
+        commit = getattr(rev, "commit_hash", "") or ""
+        if commit.startswith(wanted) or wanted.startswith(commit):
+            return True
+        refs = getattr(rev, "refs", None) or ()
+        return wanted in refs
+
+    def _hub_repo_dir(self, repo_id: str) -> Path | None:
+        """Best-effort path to models--org--name under the Hub cache."""
+        base = Path(self.cache_dir) if self.cache_dir else Path.home() / ".cache" / "huggingface" / "hub"
+        # Newer layouts nest under hub/; older may already be the hub root
+        candidates = [base, base / "hub"] if base.name != "hub" else [base]
+        slug = "models--" + repo_id.replace("/", "--")
+        for root in candidates:
+            path = root / slug
+            if path.is_dir():
+                return path
+        return None
 
     def entry_public_dict(self, entry: ModelEntry, *, downloaded: bool, loaded: bool) -> dict[str, Any]:
         return {

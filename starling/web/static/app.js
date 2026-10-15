@@ -297,13 +297,37 @@
         await api(`/v1/models/${encodeURIComponent(modelId)}/unload`, { method: "POST" });
         showMsg(msgEl, `Unloaded ${modelId}`, "ok");
       } else {
-        showMsg(msgEl, `Purging ${modelId}…`, "info");
-        await api(`/v1/models/${encodeURIComponent(modelId)}?purge=true`, { method: "DELETE" });
-        showMsg(msgEl, `Purged ${modelId}`, "ok");
+        if (
+          !confirm(
+            `Delete downloaded files for "${modelId}" from disk?\n\nThe registry entry stays; you can download again later.`,
+          )
+        ) {
+          return;
+        }
+        showMsg(msgEl, `Purging ${modelId} from disk…`, "info");
+        const result = await api(`/v1/models/${encodeURIComponent(modelId)}?purge=true`, {
+          method: "DELETE",
+        });
+        if (result.still_downloaded) {
+          showMsg(
+            msgEl,
+            `Purge ran for ${modelId} but files still look present (method=${result.purge?.method || "?"}).`,
+            "error",
+          );
+        } else if (!result.purged) {
+          showMsg(msgEl, `${modelId} had nothing on disk to purge`, "info");
+        } else {
+          const freed = result.purge?.freed_bytes;
+          const extra =
+            freed != null && freed > 0 ? ` (~${fmtBytes(freed)} freed)` : "";
+          showMsg(msgEl, `Purged ${modelId} from disk${extra}`, "ok");
+        }
       }
-      refreshModels();
+      await refreshModels();
+      if ($("#panel-status")?.classList.contains("active")) await loadStatus();
     } catch (e) {
       showMsg(msgEl, e.message, "error");
+      await refreshModels();
     }
   }
 

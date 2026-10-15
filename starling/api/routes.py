@@ -116,13 +116,19 @@ async def delete_registry_entry(
         entry = registry.require(model_id)
     except KeyError:
         raise HTTPException(404, f"Unknown model '{model_id}'") from None
+    purge_info: dict[str, Any] | None = None
     if purge:
-        registry.purge(entry)
+        purge_info = registry.purge(entry)
     try:
         registry.delete(model_id)
     except KeyError:
         raise HTTPException(404, f"Unknown model '{model_id}'") from None
-    return {"id": model_id, "deleted": True, "purged": purge}
+    return {
+        "id": model_id,
+        "deleted": True,
+        "purged": bool(purge and purge_info and purge_info.get("method") != "noop"),
+        "purge": purge_info,
+    }
 
 
 @router.get("/v1/models")
@@ -257,12 +263,19 @@ async def delete_model(
         raise HTTPException(404, f"Unknown model '{model_id}'") from None
 
     unloaded = manager.unload(model_id)
-    purged = False
+    purge_info: dict[str, Any] | None = None
     if purge:
-        registry.purge(entry)
-        purged = True
+        purge_info = registry.purge(entry)
+    still_downloaded = registry.is_downloaded(entry)
     M.MODELS_LOADED.set(len(manager.loaded_ids()))
-    return {"id": model_id, "unloaded": unloaded, "purged": purged}
+    return {
+        "id": model_id,
+        "unloaded": unloaded,
+        "purged": bool(purge and purge_info and purge_info.get("method") != "noop"),
+        "still_downloaded": still_downloaded,
+        "purge": purge_info,
+        **_entry_view(registry, manager, model_id),
+    }
 
 
 @router.post("/v1/audio/transcriptions")
