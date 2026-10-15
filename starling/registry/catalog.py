@@ -25,6 +25,7 @@ class ModelEntry:
     languages: Any = "auto"
     supports_translate: bool = False
     supports_timestamps: bool = False
+    multi_gpu: bool = False
     license: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -41,6 +42,7 @@ class ModelEntry:
             "languages",
             "supports_translate",
             "supports_timestamps",
+            "multi_gpu",
             "license",
         }
         extra = {k: v for k, v in data.items() if k not in known}
@@ -64,6 +66,7 @@ class ModelEntry:
             languages=data.get("languages", "auto"),
             supports_translate=bool(data.get("supports_translate", False)),
             supports_timestamps=bool(data.get("supports_timestamps", False)),
+            multi_gpu=bool(data.get("multi_gpu", False)),
             license=data.get("license"),
             extra=extra,
         )
@@ -78,6 +81,7 @@ class ModelEntry:
             "languages": self.languages,
             "supports_translate": self.supports_translate,
             "supports_timestamps": self.supports_timestamps,
+            "multi_gpu": self.multi_gpu,
         }
         if self.file:
             d["file"] = self.file

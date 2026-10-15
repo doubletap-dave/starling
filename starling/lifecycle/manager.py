@@ -162,7 +162,7 @@ class ModelManager:
             local_path = self.ensure_downloaded(entry, job_id=job_id)
             progress_store.update(job_id, message=f"Loading {model_id} into VRAM")
             backend = self._backend_for(entry)
-            allow_map = entry.backend == "transformers"
+            allow_map = entry.multi_gpu
             placement = self.placer.place(entry.vram_mb, allow_device_map=allow_map)
             logger.info("Loading %s on %s via %s", model_id, placement.device, entry.backend)
             handle = backend.load(entry, local_path, placement)
