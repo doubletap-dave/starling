@@ -153,8 +153,8 @@ On a tag push, `VERSION` is the tag with a leading `v` stripped. On `main`, `VER
 
 | Secret | Purpose |
 |--------|---------|
-| `FORGEJO_REGISTRY_USER` | Username that can write packages (e.g. `ghostweasel`) |
-| `FORGEJO_REGISTRY_TOKEN` | Forgejo access token with `write:package` (and usually `read:package`) |
+| `FR_USER` | Username that can write packages (e.g. `ghostweasel`) |
+| `FR_TOKEN` | Forgejo access token with `write:package` (and usually `read:package`) |
 | `DOCKERHUB_USERNAME` | Docker Hub user/org that owns `topiary` |
 | `DOCKERHUB_TOKEN` | Docker Hub access token (not the account password) |
 

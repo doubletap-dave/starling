@@ -43,8 +43,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: git:3000
-          username: ${{ secrets.FORGEJO_REGISTRY_USER }}
-          password: ${{ secrets.FORGEJO_REGISTRY_TOKEN }}
+          username: ${{ secrets.FR_USER }}
+          password: ${{ secrets.FR_TOKEN }}
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
