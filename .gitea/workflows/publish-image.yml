@@ -17,8 +17,10 @@ env:
   DOCKERHUB_IMAGE: topiary/starling
 
 jobs:
-  publish:
+  publish-forgejo:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,12 +48,6 @@ jobs:
           username: ${{ secrets.FR_USER }}
           password: ${{ secrets.FR_TOKEN }}
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Build image
         shell: bash
         run: |
@@ -63,8 +59,6 @@ jobs:
             --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             -t "${FORGEJO_IMAGE}:${V}" \
             -t "${FORGEJO_IMAGE}:latest" \
-            -t "${DOCKERHUB_IMAGE}:${V}" \
-            -t "${DOCKERHUB_IMAGE}:latest" \
             .
 
       - name: Push to Forgejo
@@ -75,10 +69,33 @@ jobs:
           docker push "${FORGEJO_IMAGE}:${V}"
           docker push "${FORGEJO_IMAGE}:latest"
 
-      - name: Push to Docker Hub
+  # Only runs after Forgejo build+push succeed — no Docker Hub publish on partial failure.
+  publish-dockerhub:
+    needs: [publish-forgejo]
+    if: ${{ success() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to Forgejo container registry
+        uses: docker/login-action@v3
+        with:
+          registry: git:3000
+          username: ${{ secrets.FR_USER }}
+          password: ${{ secrets.FR_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Pull from Forgejo, retag, push to Docker Hub
         shell: bash
         run: |
           set -euo pipefail
-          V="${{ steps.ver.outputs.version }}"
+          V="${{ needs.publish-forgejo.outputs.version }}"
+          docker pull "${FORGEJO_IMAGE}:${V}"
+          docker pull "${FORGEJO_IMAGE}:latest"
+          docker tag "${FORGEJO_IMAGE}:${V}" "${DOCKERHUB_IMAGE}:${V}"
+          docker tag "${FORGEJO_IMAGE}:latest" "${DOCKERHUB_IMAGE}:latest"
           docker push "${DOCKERHUB_IMAGE}:${V}"
           docker push "${DOCKERHUB_IMAGE}:latest"
