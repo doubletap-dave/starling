@@ -7,6 +7,7 @@ on:
     tags:
       - "v*"
       - "[0-9]*"
+  workflow_dispatch:
 
 concurrency:
   group: publish-image-${{ github.ref }}
@@ -72,7 +73,7 @@ jobs:
   # Only runs after Forgejo build+push succeed — no Docker Hub publish on partial failure.
   publish-dockerhub:
     needs: [publish-forgejo]
-    if: ${{ success() }}
+    if: ${{ success() && startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     steps:
       - name: Log in to Forgejo container registry
