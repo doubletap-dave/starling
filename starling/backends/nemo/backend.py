@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import numpy as np
 import soundfile as sf
@@ -13,6 +15,36 @@ from starling.gpu.placer import Placement
 from starling.registry.catalog import ModelEntry
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _legacy_checkpoint_load_env() -> Iterator[None]:
+    """Allow NeMo's legacy pickle checkpoints to load under torch >= 2.6.
+
+    PyTorch 2.6 flipped ``torch.load``'s ``weights_only`` default to True,
+    which rejects the legacy ``.nemo`` checkpoints (e.g. orukeet) that NeMo's
+    ``restore_from`` loads without an explicit ``weights_only`` argument.
+    ``TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1`` is PyTorch/NeMo's prescribed
+    override for trusted checkpoints; torch re-reads it on every load, so
+    scoping it to ``restore_from`` confines the (unsafe) pickle load to
+    registry-pinned NeMo checkpoints instead of the whole process. Only
+    enable this for checkpoints from trusted sources -- weights_only=False
+    permits arbitrary code execution during unpickling.
+    """
+    previous = os.environ.get("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD")
+    if previous != "1":
+        logger.warning(
+            "Loading NeMo checkpoint with TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 "
+            "(legacy weights_only=False load of a trusted, registry-pinned checkpoint)"
+        )
+    os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", None)
+        else:
+            os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = previous
 
 
 class NemoBackend:
@@ -30,7 +62,8 @@ class NemoBackend:
 
         device = placement.device if placement.device != "auto" else "cuda:0"
         logger.info("NeMo restore_from(%s) -> %s", local_path, device)
-        model = ASRModel.restore_from(restore_path=local_path, map_location=device)
+        with _legacy_checkpoint_load_env():
+            model = ASRModel.restore_from(restore_path=local_path, map_location=device)
         model.eval()
         if device.startswith("cuda") and torch.cuda.is_available():
             model = model.to(device)
