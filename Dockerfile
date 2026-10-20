@@ -26,8 +26,11 @@ COPY starling ./starling
 # stale) so image rebuilds under the same tag cannot silently drift
 # torch/NeMo versions -- that drift is what broke NeMo checkpoint loads
 # when a rebuild resolved torch >= 2.6 under the unchanged 0.1.9 tag.
+# --no-cache keeps uv's wheel cache out of the image layer: with it, the
+# venv layer balloons by gigabytes, which made layer export take ~37 min
+# and the registry blob commit time out on push.
 RUN uv python install 3.12 \
-    && uv sync --locked --no-dev --extra nemo --python 3.12
+    && uv sync --locked --no-cache --no-dev --extra nemo --python 3.12
 
 ENV PATH="/opt/venv/bin:$PATH"
 VOLUME ["/cache/huggingface"]
